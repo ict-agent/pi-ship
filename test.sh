@@ -391,4 +391,74 @@ done
   || fail "$MISSING listed file(s) do not exist"
 
 echo
+say "12. --dry-run never aborts, even on a machine that cannot install pi"
+
+# A dry run exists to show what WOULD happen. On a host where node is too old
+# or pi is absent the old runbook exited 1 before printing the plan, so the user
+# saw an error instead of the preview they asked for.
+DRY_HOME=/tmp/pi-ship-selftest/dryhome
+rm -rf "$DRY_HOME"; mkdir -p "$DRY_HOME"
+OUT_DRY=/tmp/pi-ship-selftest/dryout
+rm -rf "$OUT_DRY"
+
+node --experimental-strip-types -e '
+import { collect } from "./src/collect.ts";
+import { writeBundle } from "./src/writer.ts";
+const dir = process.argv[1];
+await writeBundle(collect({ outDir: dir }), dir, { force: true, secrets: {} });
+' "$OUT_DRY" >/dev/null 2>&1
+
+set +e
+DRY_LOG=$(HOME="$DRY_HOME" bash "$OUT_DRY/install.sh" --dry-run --yes 2>&1)
+DRY_RC=$?
+set -e
+
+[ "$DRY_RC" -eq 0 ] && pass "dry run on a pi-less machine exits 0" \
+  || fail "dry run exited $DRY_RC instead of previewing"
+
+# It must still reach the end and list the work.
+case "$DRY_LOG" in
+  *"dry run complete"*) pass "dry run reaches the end of the plan" ;;
+  *) fail "dry run stopped early" ;;
+esac
+
+# A dry run must still tell the user when pi is missing, rather than pretending
+# everything is fine. `have pi` sees the real PATH, so drive the branch by
+# forcing a PATH that cannot contain pi; then the warning must appear.
+# Keep coreutils on PATH but put a directory first that shadows nothing useful,
+# so `have pi` fails while the script can still run. Pointing PATH at a
+# nonexistent dir breaks bash itself ("bash: command not found").
+# Build a PATH with every directory that contains a `pi` binary removed.
+NOPI_PATH=""
+IFS=: read -r -a _dirs <<< "$PATH"
+for _d in "${_dirs[@]}"; do
+  [ -n "$_d" ] || continue
+  [ -x "$_d/pi" ] && continue
+  NOPI_PATH="${NOPI_PATH:+$NOPI_PATH:}$_d"
+done
+set +e
+DRY_NOPI=$(HOME="$DRY_HOME" PATH="$NOPI_PATH" bash "$OUT_DRY/install.sh" --dry-run --yes 2>&1)
+set -e
+case "$DRY_NOPI" in
+  *"pi is not available"*) pass "dry run reports that pi is absent" ;;
+  *) fail "dry run did not mention the missing pi" ;;
+esac
+
+# Nothing may actually be written during a dry run.
+[ -f "$DRY_HOME/.pi/agent/settings.json" ] \
+  && fail "dry run wrote settings.json" \
+  || pass "dry run changed nothing on disk"
+
+# The closing note must tell the user pi is not on PATH in the CURRENT shell;
+# otherwise they hit "Command 'pi' not found" (Ubuntu then suggests snap).
+# The dry run reports the missing pi; the real run carries the PATH hint.
+case "$DRY_LOG" in
+  *"re-run without --dry-run"*) pass "dry run points at the real run" ;;
+  *) fail "dry run does not say what to do next" ;;
+esac
+grep -q 'source ~/.bashrc' "$OUT_DRY/install.sh" \
+  && pass "real run carries the PATH/new-shell hint" \
+  || fail "real run omits the PATH hint"
+
+echo
 if [ "$FAIL" = 0 ]; then printf '\033[32mALL CHECKS PASSED\033[0m\n'; else printf '\033[31mSOME CHECKS FAILED\033[0m\n'; exit 1; fi
