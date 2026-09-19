@@ -1,16 +1,16 @@
 {
-  "name": "pi-migrate",
+  "name": "pi-ship",
   "version": "0.1.0",
-  "description": "Migrate a pi setup between machines: snapshot pinned extensions, providers and user config into a portable bundle, then replay it with a self-checking interactive runbook.",
+  "description": "Ship a pi setup between machines: snapshot pinned extensions, providers and user config into a portable bundle, then replay it incrementally with a self-checking interactive runbook.",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://github.com/ict-agent/pi-migrate#readme",
+  "homepage": "https://github.com/ict-agent/pi-ship#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ict-agent/pi-migrate.git"
+    "url": "git+https://github.com/ict-agent/pi-ship.git"
   },
   "bugs": {
-    "url": "https://github.com/ict-agent/pi-migrate/issues"
+    "url": "https://github.com/ict-agent/pi-ship/issues"
   },
   "keywords": [
     "pi-package",

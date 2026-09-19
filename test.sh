@@ -12,15 +12,15 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT=/tmp/pi-migrate-selftest/bundle
-TARGET=/tmp/pi-migrate-selftest/target
+OUT=/tmp/pi-ship-selftest/bundle
+TARGET=/tmp/pi-ship-selftest/target
 FAIL=0
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=1; }
 
-rm -rf /tmp/pi-migrate-selftest
+rm -rf /tmp/pi-ship-selftest
 mkdir -p "$(dirname "$OUT")" "$TARGET/.pi/agent" "$TARGET/bin" "$REPO/.tmp"
 
 say "1. export"
@@ -105,8 +105,8 @@ STUB
 chmod +x "$TARGET/bin/pi"
 
 env -i HOME="$TARGET" PATH="$TARGET/bin:$(dirname "$(command -v node)"):/usr/bin:/bin" \
-  bash "$OUT/install.sh" >/tmp/pi-migrate-selftest/apply1.log 2>&1 \
-  && pass "runbook exited 0" || { fail "runbook failed"; tail -20 /tmp/pi-migrate-selftest/apply1.log; }
+  bash "$OUT/install.sh" >/tmp/pi-ship-selftest/apply1.log 2>&1 \
+  && pass "runbook exited 0" || { fail "runbook failed"; tail -20 /tmp/pi-ship-selftest/apply1.log; }
 
 for f in extensions/model-name.ts models.json settings.json web-search.json; do
   [ -f "$TARGET/.pi/agent/$f" ] && pass "target has $f" || fail "target missing $f"
@@ -128,25 +128,25 @@ MAXSRC=$(grep '^install' "$TARGET/install-calls.log" | awk '{print NF-1}' | sort
   || fail "an install call passed $MAXSRC sources; pi install takes only one"
 
 say "5. re-run is idempotent"
-cp "$TARGET/.pi/agent/settings.json" /tmp/pi-migrate-selftest/settings.before
-cp "$TARGET/.pi/agent/models.json" /tmp/pi-migrate-selftest/models.before
+cp "$TARGET/.pi/agent/settings.json" /tmp/pi-ship-selftest/settings.before
+cp "$TARGET/.pi/agent/models.json" /tmp/pi-ship-selftest/models.before
 env -i HOME="$TARGET" PATH="$TARGET/bin:$(dirname "$(command -v node)"):/usr/bin:/bin" \
-  bash "$OUT/install.sh" >/tmp/pi-migrate-selftest/apply2.log 2>&1 \
+  bash "$OUT/install.sh" >/tmp/pi-ship-selftest/apply2.log 2>&1 \
   && pass "second run exited 0" || fail "second run failed"
 
-cmp -s /tmp/pi-migrate-selftest/settings.before "$TARGET/.pi/agent/settings.json" \
+cmp -s /tmp/pi-ship-selftest/settings.before "$TARGET/.pi/agent/settings.json" \
   && pass "settings.json unchanged on re-run" || fail "settings.json changed on re-run"
-cmp -s /tmp/pi-migrate-selftest/models.before "$TARGET/.pi/agent/models.json" \
+cmp -s /tmp/pi-ship-selftest/models.before "$TARGET/.pi/agent/models.json" \
   && pass "models.json unchanged on re-run" || fail "models.json changed on re-run"
 
-grep -q 'settings already match' /tmp/pi-migrate-selftest/apply2.log \
+grep -q 'settings already match' /tmp/pi-ship-selftest/apply2.log \
   && pass "re-run reports settings already match" || fail "re-run did not detect match"
 
 say "6. node version gate (the check that matters on a real host)"
 # Extract version_ge from the generated runbook and exercise it. A machine with
 # node 18 (Ubuntu 24.04 default) must be recognised as TOO OLD, not silently ok.
-awk '/^version_ge\(\) \{/,/^\}/' "$OUT/install.sh" > /tmp/pi-migrate-selftest/vg.sh
-cat >> /tmp/pi-migrate-selftest/vg.sh <<'VG'
+awk '/^version_ge\(\) \{/,/^\}/' "$OUT/install.sh" > /tmp/pi-ship-selftest/vg.sh
+cat >> /tmp/pi-ship-selftest/vg.sh <<'VG'
 chk() { if version_ge "$1" "$2"; then r=yes; else r=no; fi
   if [ "$r" = "$3" ]; then echo "ok $1"; else echo "FAIL $1>= $2 gave $r want $3"; fi; }
 chk 18.19.1 22.19.0 no
@@ -155,12 +155,12 @@ chk v22.19.0 22.19.0 yes
 chk 22.18.9 22.19.0 no
 chk v26.7.0 22.19.0 yes
 VG
-VG_FAIL=$(bash /tmp/pi-migrate-selftest/vg.sh | grep -c '^FAIL' || true)
+VG_FAIL=$(bash /tmp/pi-ship-selftest/vg.sh | grep -c '^FAIL' || true)
 [ "$VG_FAIL" = 0 ] && pass "version_ge handles 18/22/24/26 correctly" \
-  || { fail "version_ge comparison wrong"; bash /tmp/pi-migrate-selftest/vg.sh | grep '^FAIL'; }
+  || { fail "version_ge comparison wrong"; bash /tmp/pi-ship-selftest/vg.sh | grep '^FAIL'; }
 
 # A too-old node must produce a warning, never a tick.
-FAKE=/tmp/pi-migrate-selftest/fakenode
+FAKE=/tmp/pi-ship-selftest/fakenode
 mkdir -p "$FAKE/bin"
 printf '#!/bin/sh\n[ "$1" = "--version" ] && echo v18.19.1\nexit 0\n' > "$FAKE/bin/node"
 printf '#!/bin/sh\nexit 0\n' > "$FAKE/bin/npm"
@@ -171,35 +171,86 @@ echo "$PRE" | grep -q 'below pi' && pass "node 18 is flagged as below the minimu
 echo "$PRE" | grep -q '✓ node' && fail "node 18 wrongly shown as OK" \
   || pass "node 18 is not shown as a passing check"
 
-say "7. plan detects drift (and writes nothing)"
+say "7. plan reports drift without proposing destruction"
 cat > "$REPO/.tmp/selftest-plan.ts" <<EOF
 import { planBundle, formatPlan } from "$REPO/src/bundle.ts";
 console.log(formatPlan(planBundle("$OUT")));
 EOF
 PLAN_OUT=$(node --experimental-strip-types "$REPO/.tmp/selftest-plan.ts")
-echo "$PLAN_OUT" | tail -4
+echo "$PLAN_OUT" | tail -3
 
-# The target we just applied to is a fresh dir; planning against a copy of it
-# should report drift for the file we deliberately perturb.
-DRIFT_DIR=/tmp/pi-migrate-selftest/drift
-mkdir -p "$DRIFT_DIR"
-cp -R "$TARGET/.pi/agent" "$DRIFT_DIR/agent"
-printf '{\n  "mutated": true\n}\n' > "$DRIFT_DIR/agent/web-search.json"
-
-cat > "$REPO/.tmp/selftest-drift.ts" <<EOF
-import { planBundle } from "$REPO/src/bundle.ts";
-const p = planBundle("$OUT");
-const drift = p.items.filter(i => i.action !== "skip");
-console.log(JSON.stringify({ drift: drift.map(d => d.target), conflicts: p.conflicts }));
-EOF
-DRIFT_JSON=$(node --experimental-strip-types "$REPO/.tmp/selftest-drift.ts")
-echo "  plan says: $DRIFT_JSON"
+if echo "$PLAN_OUT" | grep -q 'existing packages and files are not replaced'; then
+  pass "plan states the incremental guarantee"
+else
+  fail "plan does not mention incremental semantics"
+fi
 
 # planning must never mutate the live agent dir
 BEFORE=$(cat "$TARGET/.pi/agent/models.json" | shasum | cut -d' ' -f1)
 node --experimental-strip-types "$REPO/.tmp/selftest-plan.ts" >/dev/null
 AFTER=$(cat "$TARGET/.pi/agent/models.json" | shasum | cut -d' ' -f1)
 [ "$BEFORE" = "$AFTER" ] && pass "plan is read-only" || fail "plan mutated the agent dir"
+
+echo
+say "8. incremental: existing packages are never touched"
+# `pi install` rewrites the settings entry and reinstalls, so an older bundle
+# applied to a newer machine can silently DOWNGRADE a package. The runbook must
+# therefore detect what is already installed and skip it by default.
+if grep -q 'pkg_installed' "$OUT/install.sh"; then
+  pass "runbook detects already-installed packages"
+else
+  fail "runbook has no already-installed detection"
+fi
+
+if grep -q 'already installed - left as-is' "$OUT/install.sh"; then
+  pass "default behaviour is to leave existing packages alone"
+else
+  fail "no leave-as-is branch"
+fi
+
+if grep -q -- '--update-existing' "$OUT/install.sh"; then
+  pass "opt-in upgrade flag exists"
+else
+  fail "--update-existing flag missing"
+fi
+
+# An existing package must not reach a `pi install` call on the default path.
+# The install invocation for a package only appears inside the
+# --update-existing branch and the "elif" (absent) branch.
+INSTALL_LINES=$(grep -c 'doit pi install' "$OUT/install.sh")
+GUARDED=$(grep -c 'elif doit pi install' "$OUT/install.sh")
+[ "$INSTALL_LINES" -gt 0 ] && pass "packages still get installed when absent ($INSTALL_LINES call sites)" \
+  || fail "no install call sites at all"
+[ "$GUARDED" -gt 0 ] && pass "the absent-branch install is guarded by pkg_installed" \
+  || fail "install not guarded"
+
+echo
+say "9. incremental: existing files are not overwritten"
+if grep -q 'pi-ship-new' "$OUT/install.sh"; then
+  pass "conflicting config/extensions are written alongside, not over"
+else
+  fail "no side-by-side fallback for conflicting files"
+fi
+
+# Prove it for real: point the runbook at a target that already has a
+# different web-search.json and confirm the original survives.
+INC_DIR=/tmp/pi-ship-selftest/incr
+rm -rf "$INC_DIR"; mkdir -p "$INC_DIR/.pi/agent"
+printf '{\n  "userOwned": true\n}\n' > "$INC_DIR/.pi/agent/web-search.json"
+ORIG_MD5=$(shasum "$INC_DIR/.pi/agent/web-search.json" | cut -d' ' -f1)
+
+# Apply only the config layer against a HOME whose web-search.json differs.
+HOME="$INC_DIR" "$OUT/install.sh" --yes --only=config >/dev/null 2>&1 || true
+
+NEW_MD5=$(shasum "$INC_DIR/.pi/agent/web-search.json" | cut -d' ' -f1)
+[ "$ORIG_MD5" = "$NEW_MD5" ] && pass "pre-existing config file was preserved" \
+  || fail "pre-existing config file was overwritten"
+
+if [ -f "$INC_DIR/.pi/agent/web-search.json.pi-ship-new" ]; then
+  pass "bundled copy landed beside it as .pi-ship-new"
+else
+  fail "no .pi-ship-new copy produced"
+fi
 
 echo
 if [ "$FAIL" = 0 ]; then printf '\033[32mALL CHECKS PASSED\033[0m\n'; else printf '\033[31mSOME CHECKS FAILED\033[0m\n'; exit 1; fi

@@ -1,5 +1,5 @@
 /**
- * pi-migrate — preflight inspection.
+ * pi-ship — preflight inspection.
  *
  * Runs BEFORE anything is written. Its job is to answer "can this bundle be
  * applied here, and what would have to happen first?" so the runbook can act

@@ -11,7 +11,7 @@
 一个 bundle 目录：
 
 ```
-pi-migrate-<host>-<date>/
+pi-ship-<host>-<date>/
 ├── install.sh          ← 主脚本：自检 + 交互配置 + 自动安装
 ├── pi-ship.json        ← 清单：每一层、每个版本
 ├── .env.example        ← 需要哪些密钥（只有名字）
@@ -75,7 +75,54 @@ chmod +x install.sh
 ./install.sh --preflight     # ① 只看自检，不改任何东西
 ./install.sh --dry-run       # ② 预演，仍然不改
 ./install.sh                 # ③ 交互式真正执行
+./install.sh --update-existing   # ④ 可选：连已经装过的包也升到 bundle 的版本
 ```
+
+> 目标机**已经装了 pi** 也没关系 —— 这是设计中最主要的场景。默认**增量**：
+> 已有的东西一律不动。详见下节。
+
+### 增量语义（目标机已有 pi 时，默认行为）
+
+**默认什么都不覆盖。** 每层都有明确的"已存在则跳过"规则：
+
+| 内容 | 目标机已有 | 目标机没有 |
+|---|---|---|
+| 扩展包 | **完全不动**（不升不降） | 安装 |
+| 散装扩展文件 | 保留原文件，bundle 版本写成 `*.pi-ship-new` | 复制 |
+| provider | 保留 | 新增 |
+| 配置文件 | 保留原文件，bundle 版本写成 `*.pi-ship-new` | 复制 |
+| settings 键 | 保留 | 写入 |
+| 密钥值 | 保留 | 补上 |
+
+**为什么扩展包必须按名字判断**：`pi install <spec>` **没有"已装则跳过"的语义** ——
+它会改写 `settings.json` 里的条目并重新安装。所以把较旧的 bundle 应用到较新的机器上，
+会**静默降级**那台机器已有的包。实测确认过这个行为：
+
+```
+目标机已有   rpiv-btw 2.10.1
+bundle 携带  rpiv-btw 2.10.0
+naive 结果   rpiv-btw 2.10.0   ← 被降级了
+pi-ship 结果 rpiv-btw 2.10.1   ← 不动
+```
+
+因此 runbook 自己判断：从 spec 里解析出**裸包名**（正确剥离 `npm:` / `git:` 前缀
+和版本号，`@scope/name` 也能处理），查目标机是否已有，只装缺的。
+
+**文件冲突时**你能同时拿到两份做对比：
+
+```
+~/.pi/agent/sol-pi.json              # 你的，原封不动
+~/.pi/agent/sol-pi.json.pi-ship-new  # bundle 带来的那份
+```
+
+确认要采纳就 `mv` 覆盖。想整体切到"覆盖模式"：
+
+```bash
+./install.sh --update-existing
+```
+
+它让扩展包改为覆盖安装、配置文件改为覆盖（并留 `*.bak-pi-ship` 备份）。
+**但密钥永远不适用此开关** —— 覆盖一个正在用的凭据，比留着它危险得多。
 
 ### 交互式会问你什么
 
@@ -127,7 +174,7 @@ CFG_SECRETS=yes
 ✓ extension model-name.ts
 ✓ provider zhipu
 ✓ provider ksyun
-pi-migrate: migration complete
+pi-ship: migration complete
   all checks passed.
 ```
 
@@ -159,7 +206,7 @@ pi
 | 5 | **装扩展** — 逐个 `pi install`，失败只记录不中断 |
 | 6 | **散装扩展** — 拷进 `~/.pi/agent/extensions/` |
 | 7 | **provider** — merge 进 `models.json`（已有的不动），先备份 |
-| 8 | **配置文件** — 拷 `web-search.json`、`sol-pi.json` 等（改前备份 `.bak-pi-migrate`） |
+| 8 | **配置文件** — 拷 `web-search.json`、`sol-pi.json` 等（改前备份 `.bak-pi-ship`） |
 | 9 | **settings** — 只 merge 可移植的键 |
 | 10 | **密钥** — 写 `.env`，**只填缺失的** |
 | 11 | **PATH** — 可选，写进 shell profile |
@@ -171,8 +218,10 @@ pi
 
 ## 6. 安全保证
 
-- **不覆盖已有配置**。`models.json`、`settings.json` 是 merge；被改写的文件先备份成 `*.bak-pi-migrate`。
-- **密钥只填不覆盖**。目标机已设的同名变量永远优先。
+- **默认增量，什么都不覆盖**。扩展包按名字跳过、配置文件写成 `*.pi-ship-new`、
+  provider / settings 是 merge、密钥只填不覆盖。详见第 3 节的增量语义。
+- **扩展包绝不会被降级**。`pi install` 没有"已装则跳过"语义，所以 runbook 自己判断。
+- **密钥只填不覆盖**。目标机已设的同名变量永远优先，且不受 `--update-existing` 影响。
 - **永不打包** `auth.json`（OAuth token）、`trust.json`、`models-store.json`、sessions。
 - **导出时字面量密钥自动替换**成 `$VAR` 引用，名字进 `.env.example`。
 - **`.secrets.env` 权限 600 且被 gitignore**。
@@ -183,7 +232,9 @@ pi
 ## 7. 已知限制
 
 - **OAuth provider 需重新登录**：`openai-codex` 之类的 token 在 `auth.json`，不迁移。目标机上 `/login`。
-- **`packages` 是并集而非快照**：runbook 用 `pi install` 逐个添加。若目标机已有别的包，会保留（这是有意的——严格快照需要删除操作，风险更高）。
+- **结果是并集而非快照**：增量语义意味着目标机已有的包、配置、provider 都会保留。
+  这是**有意的**——严格快照需要 `pi uninstall` 删除操作，与"已有的不动"直接冲突。
+  想让共有部分对齐 bundle 版本，用 `--update-existing`。
 - **只迁移用户级配置**：`~/.pi/agent/`。项目级 `.pi/` 不在范围内。
 - **非交互 shell 的 PATH**：bash 在非交互模式下不读任何 profile，所以 `ssh host 'pi ...'` 可能找不到 `pi`。用 `ssh host 'bash -lc "pi ..."'`，或先 `export PATH`。
 - **网络受限时**：`raw.githubusercontent.com` 常被墙。nvm 脚本有 4 个镜像回退（github.com / jsdelivr / gitee）+ git clone 兜底；都不行就用**选项 4（npm 方式）**。
@@ -199,6 +250,8 @@ pi
 | `Unexpected argument ...` | `pi install` 一次只吃一个 source。本脚本已逐个调用，出现即说明 bundle 版本过旧 |
 | `Could not resolve host: raw.githubusercontent.com` | 用 npm 方式装 node（选项 4），或自己装好 node 后选 5 |
 | `No API key found for the selected model` | 密钥没进 shell。`set -a; . .env; set +a` |
+| 目标机的包版本不对/比预期旧 | 已有包被跳过了。这是默认行为；用 `--update-existing` 升到 bundle 版本 |
+| 多了 `xxx.pi-ship-new` 文件 | 目标机已有同名文件且内容不同。它是 bundle 版本，对比后自行决定是否采纳 |
 | `missing secrets: X` | 该变量目标机没有且 bundle 也没带 → 手动补进 `.env` |
 | 扩展工具没出现 | `pi` 已在跑 → `/reload`；或确认 `settings.json` 的 `packages` 有 11 项 |
 
@@ -234,10 +287,11 @@ pi
 ```
 
 ```bash
-./install.sh --preflight
-./install.sh --dry-run
-./install.sh --yes
-./install.sh --only=extensions
-./install.sh --interactive
+./install.sh --preflight          # 只自检
+./install.sh --dry-run            # 预演
+./install.sh --yes                # 无人值守
+./install.sh --only=extensions    # 只跑某一层
+./install.sh --update-existing    # 连已装过的包也升级
+./install.sh --interactive        # 强制交互
 ./install.sh --help
 ```

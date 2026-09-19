@@ -1,5 +1,5 @@
 /**
- * pi-migrate — secret handling.
+ * pi-ship — secret handling.
  *
  * Two jobs:
  *
@@ -191,7 +191,7 @@ export function buildEnvExample(names: string[]): string {
 		return "# No secrets are required by this bundle.\n";
 	}
 	const lines = [
-		"# pi-migrate — secrets required by this bundle.",
+		"# pi-ship — secrets required by this bundle.",
 		"# Fill these in, then:  set -a; . ./.env; set +a   (or use your shell's env manager)",
 		"# Never commit the filled-in .env.",
 		"",
@@ -240,7 +240,7 @@ export function planSecretMigration(
 export function buildMigratedEnvFile(plans: SecretPlan[]): string {
 	const writable = plans.filter((p) => p.action === "set");
 	const lines = [
-		"# pi-migrate — secrets migrated from the source machine.",
+		"# pi-ship — secrets migrated from the source machine.",
 		"# Generated automatically. Values already present in the environment",
 		"# on this machine were deliberately left out.",
 		"#",

@@ -1,9 +1,9 @@
 /**
- * pi-migrate — shared types.
+ * pi-ship — shared types.
  *
  * The bundle is a directory that looks like this:
  *
- *   pi-migrate-<host>-<date>/
+ *   pi-ship-<host>-<date>/
  *     pi-ship.json          # the manifest (layers, versions, everything)
  *     install.sh            # Dockerfile-style runbook, one step per line
  *     .env.example          # secret names the target machine must supply

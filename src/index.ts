@@ -1,5 +1,5 @@
 /**
- * pi-migrate — pi extension entry point.
+ * pi-ship — pi extension entry point.
  *
  * Commands:
  *   /ship export [--providers] [--config] [--out DIR]
@@ -50,7 +50,7 @@ function parseArgs(raw: string): ParsedArgs {
 function defaultOutDir(): string {
 	const stamp = new Date().toISOString().slice(0, 10);
 	const host = homedir().split("/").pop() ?? "machine";
-	return resolve(process.cwd(), `pi-migrate-${host}-${stamp}`);
+	return resolve(process.cwd(), `pi-ship-${host}-${stamp}`);
 }
 
 /**
@@ -165,7 +165,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				const bundleDir = resolve(dir);
 				if (!existsSync(join(bundleDir, "pi-ship.json"))) {
-					ctx.ui.notify(`not a pi-migrate bundle: ${bundleDir}`, "error");
+					ctx.ui.notify(`not a pi-ship bundle: ${bundleDir}`, "error");
 					return;
 				}
 
@@ -222,7 +222,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerTool({
 		name: "ship",
-		label: "pi-migrate",
+		label: "pi-ship",
 		description:
 			"Snapshot this machine's pi setup (installed extension packages with pinned versions, optionally model providers and user config files) into a portable bundle directory containing a Dockerfile-style install.sh runbook. Also plans or verifies applying an existing bundle. Ships configuration only — never the pi binary and never plaintext credentials.",
 		parameters: Type.Object({
@@ -354,7 +354,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			} catch (err) {
 				return {
-					content: [{ type: "text", text: `pi-migrate error: ${(err as Error).message}` }],
+					content: [{ type: "text", text: `pi-ship error: ${(err as Error).message}` }],
 					details: {},
 					isError: true,
 				};
@@ -370,7 +370,7 @@ export default function (pi: ExtensionAPI) {
 			const hasBundle = candidates.some((c) => existsSync(c)) && existsSync(join(ctx.cwd, "pi-ship.json"));
 			if (hasBundle) {
 				ctx.ui.notify(
-					`pi-migrate bundle detected in ${ctx.cwd} — apply with ./install.sh --dry-run, then ./install.sh`,
+					`pi-ship bundle detected in ${ctx.cwd} — apply with ./install.sh --dry-run, then ./install.sh`,
 					"info",
 				);
 			}

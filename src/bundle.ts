@@ -1,5 +1,5 @@
 /**
- * pi-migrate — reading and verifying bundles.
+ * pi-ship — reading and verifying bundles.
  *
  * `plan` is the safe half: it never writes anything, only reports the
  * difference between a bundle and the current machine. `verify` runs after an
@@ -13,7 +13,7 @@ import type { ShipManifest } from "./types.ts";
 
 export function readManifest(bundleDir: string): ShipManifest {
 	const p = join(bundleDir, "pi-ship.json");
-	if (!existsSync(p)) throw new Error(`not a pi-migrate bundle (missing pi-ship.json): ${bundleDir}`);
+	if (!existsSync(p)) throw new Error(`not a pi-ship bundle (missing pi-ship.json): ${bundleDir}`);
 	const m = JSON.parse(readFileSync(p, "utf8")) as ShipManifest;
 	if (m.schemaVersion !== 1) {
 		throw new Error(`unsupported bundle schema: ${m.schemaVersion} (this tool understands 1)`);
@@ -24,7 +24,7 @@ export function readManifest(bundleDir: string): ShipManifest {
 export type PlanItem = {
 	layer: "extensions" | "localExtensions" | "providers" | "configFiles" | "settings";
 	target: string;
-	action: "install" | "update" | "copy" | "merge" | "skip";
+	action: "install" | "update" | "copy" | "merge" | "skip" | "keep";
 	detail: string;
 };
 
@@ -87,7 +87,7 @@ export function planBundle(bundleDir: string): Plan {
 			items.push({
 				layer: "extensions",
 				target: e.spec,
-				action: present ? "skip" : "install",
+				action: present ? "keep" : "install",
 				detail: present ? "already configured" : "git package",
 			});
 		}
@@ -140,13 +140,14 @@ export function planBundle(bundleDir: string): Plan {
 		} else if (readFileSync(dest, "utf8") === c.content) {
 			items.push({ layer: "configFiles", target: c.bundlePath, action: "skip", detail: "identical" });
 		} else {
+			// Incremental: the existing file stays; the bundled copy lands beside
+			// it. Not destructive, so this is a note rather than a conflict.
 			items.push({
 				layer: "configFiles",
 				target: c.bundlePath,
-				action: "copy",
-				detail: "differs — will be overwritten",
+				action: "keep",
+				detail: `differs — kept, bundle copy as ${c.targetRel}.pi-ship-new`,
 			});
-			conflicts.push(`${c.bundlePath} exists and differs`);
 		}
 	}
 
@@ -252,9 +253,9 @@ export function formatPlan(plan: Plan): string {
 		arr.push(it);
 		byLayer.set(it.layer, arr);
 	}
-	const icon = { install: "+", update: "^", copy: ">", merge: "~", skip: "=" } as const;
+	const icon = { install: "+", update: "^", copy: ">", merge: "~", skip: "=", keep: "o" } as const;
 	const out: string[] = [
-		`pi-migrate plan for ${plan.bundle}`,
+		`pi-ship plan for ${plan.bundle}`,
 		`target: ${AGENT_DIR}`,
 		"",
 	];
@@ -273,7 +274,10 @@ export function formatPlan(plan: Plan): string {
 		for (const c of plan.conflicts) out.push(`  ! ${c}`);
 		out.push("");
 	}
-	const actionable = plan.items.filter((i) => i.action !== "skip").length;
-	out.push(`${actionable} action(s) needed, ${plan.items.length - actionable} already satisfied.`);
+	// "skip" and "keep" both mean "this machine is left as it is".
+	const actionable = plan.items.filter((i) => i.action !== "skip" && i.action !== "keep").length;
+	const settled = plan.items.length - actionable;
+	out.push(`${actionable} action(s) needed, ${settled} already satisfied or left as-is.`);
+	out.push("(incremental: existing packages and files are not replaced)")
 	return out.join("\n");
 }

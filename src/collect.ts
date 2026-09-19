@@ -1,5 +1,5 @@
 /**
- * pi-migrate — collection.
+ * pi-ship — collection.
  *
  * Reads the *live* pi install and turns it into a manifest. Everything here is
  * read-only: collection must never mutate the user's config.

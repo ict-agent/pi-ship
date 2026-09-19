@@ -1,5 +1,5 @@
 /**
- * pi-migrate — bundle writer.
+ * pi-ship — bundle writer.
  *
  * Materialises a manifest into a bundle directory.
  *
@@ -22,6 +22,7 @@ import { buildEnvExample, buildMigratedEnvFile, planSecretMigration } from "./se
 import {
 	generateReadme,
 	generateRunbook,
+	HAS_PACKAGE_MJS,
 	MERGE_MODELS_MJS,
 	MERGE_SETTINGS_MJS,
 } from "./runbook.ts";
@@ -77,6 +78,7 @@ export async function writeBundle(
 	writeFileSync(join(outDir, "bin", "merge-models.mjs"), MERGE_MODELS_MJS);
 	track(join(outDir, "bin", "merge-models.mjs"));
 	writeFileSync(join(outDir, "bin", "merge-settings.mjs"), MERGE_SETTINGS_MJS);
+	writeFileSync(join(outDir, "bin", "has-package.mjs"), HAS_PACKAGE_MJS);
 	track(join(outDir, "bin", "merge-settings.mjs"));
 
 	// ── env templates ───────────────────────────────────────────────────────
@@ -138,7 +140,7 @@ export async function writeBundle(
 	// interactive answers and any backups from version control.
 	writeFileSync(
 		join(outDir, ".gitignore"),
-		["# never commit real credentials or machine-specific state", ".env", ".secrets.env", ".pi-ship.conf", "*.bak-pi-migrate", ""].join("\n"),
+		["# never commit real credentials or machine-specific state", ".env", ".secrets.env", ".pi-ship.conf", "*.bak-pi-ship", ""].join("\n"),
 	);
 	track(join(outDir, ".gitignore"));
 

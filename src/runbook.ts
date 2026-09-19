@@ -1,5 +1,5 @@
 /**
- * pi-migrate — runbook generation.
+ * pi-ship — runbook generation.
  *
  * Produces `install.sh`: an ordered, self-checking, idempotent replay script.
  *
@@ -35,7 +35,7 @@ export function generateRunbook(m: ShipManifest): string {
 	L.push(
 		"#!/usr/bin/env bash",
 		"#",
-		`# pi-migrate runbook — generated ${m.createdAt}`,
+		`# pi-ship runbook — generated ${m.createdAt}`,
 		`# source machine: ${m.source.hostname} (${m.source.platform}/${m.source.arch})`,
 		`# pi version:     ${m.source.piVersion ?? "unknown"}`,
 		"#",
@@ -47,19 +47,21 @@ export function generateRunbook(m: ShipManifest): string {
 		"#   ./install.sh --dry-run       # show every action, change nothing",
 		"#   ./install.sh --yes           # unattended, accept the defaults/config",
 		"#   ./install.sh --only=extensions,providers",
+		"#   ./install.sh --update-existing  # upgrade packages this machine already has",
 		"#   ./install.sh --preflight     # only run the self-check, then stop",
 		"#   ./install.sh --help",
 		"# --- end of help ---",
 		"#",
 		"set -euo pipefail",
 		"",
-		'DRY_RUN=0; ASSUME_YES=0; ONLY=""; PREFLIGHT_ONLY=0; FORCE_INTERACTIVE=0',
+		'DRY_RUN=0; ASSUME_YES=0; ONLY=""; PREFLIGHT_ONLY=0; FORCE_INTERACTIVE=0; UPDATE_EXISTING=0',
 		'for arg in "$@"; do',
 		'  case "$arg" in',
 		'    --dry-run) DRY_RUN=1 ;;',
 		'    --yes|-y) ASSUME_YES=1 ;;',
 		'    --interactive) FORCE_INTERACTIVE=1 ;;',
 		'    --only=*) ONLY="${arg#--only=}" ;;',
+		'    --update-existing) UPDATE_EXISTING=1 ;;',
 		'    --preflight) PREFLIGHT_ONLY=1 ;;',
 		'    -h|--help)',
 		'      sed -n \'/^# Usage:/,/^# --- end of help ---$/p\' "$0" | sed \'s/^# \\{0,1\\}//\'',
@@ -92,6 +94,47 @@ export function generateRunbook(m: ShipManifest): string {
 		'want() {',
 		'  [ -z "$ONLY" ] && return 0',
 		'  case ",$ONLY," in *",$1,"*) return 0 ;; esac',
+		'  return 1',
+		'}',
+		'',
+		'# ── incremental install support ────────────────────────────────────────',
+		'# `pi install <spec>` has NO "already installed" semantics: it rewrites the',
+		'# settings.json entry and reinstalls, so applying an older bundle onto a',
+		'# newer machine would silently DOWNGRADE packages. So we decide ourselves',
+		'# and install only what is missing.',
+		'',
+		'# pkg_name <spec> -> bare package name, version/ref stripped.',
+		'#   npm:pi-memory@0.4.2     -> pi-memory',
+		'#   npm:@scope/pkg@1.2.3    -> @scope/pkg',
+		'#   git:github.com/o/r@v1   -> github.com/o/r',
+		'pkg_name() {',
+		'  local s="$1" n=""',
+		'  case "$s" in',
+		'    npm:*) n="${s#npm:}" ;;',
+		'    git:*) n="${s#git:}" ;;',
+		'    *)     n="$s" ;;',
+		'  esac',
+		'  case "$n" in',
+		'    @*) local scope="${n%%/*}" rest="${n#*/}"',
+		'        printf "%s/%s" "$scope" "${rest%%@*}" ;;',
+		'    *)  printf "%s" "${n%%@*}" ;;',
+		'  esac',
+		'}',
+		'',
+		'# pkg_installed <name> -> 0 when this machine already has the package.',
+		'# Checks both the recorded spec list and the install directories, because a',
+		'# package can be present on disk while absent from settings.json, or vice',
+		'# versa when settings were edited by hand.',
+		'pkg_installed() {',
+		'  local name="$1"',
+		'  [ -z "$name" ] && return 1',
+		'  if [ -f "$AGENT_DIR/settings.json" ] && have node; then',
+		'    if node "$BUNDLE_DIR/bin/has-package.mjs" "$AGENT_DIR/settings.json" "$name" 2>/dev/null; then',
+		'      return 0',
+		'    fi',
+		'  fi',
+		'  [ -d "$HOME/.pi/agent/npm/node_modules/$name" ] && return 0',
+		'  [ -d "$HOME/.pi/agent/git/github.com/$name" ] && return 0',
 		'  return 1',
 		'}',
 		'',
@@ -134,7 +177,7 @@ export function generateRunbook(m: ShipManifest): string {
 		'save_conf() {',
 		'  if [ "$DRY_RUN" = 1 ]; then return; fi',
 		'  cat > "$CONF" <<CONF_EOF',
-		'# pi-migrate: answers from the interactive configuration step.',
+		'# pi-ship: answers from the interactive configuration step.',
 		'# Delete this file to be asked again.',
 		'CFG_INSTALL_PI=$CFG_INSTALL_PI',
 		'CFG_NODE_METHOD=$CFG_NODE_METHOD',
@@ -326,11 +369,11 @@ export function generateRunbook(m: ShipManifest): string {
 		'          "https://gitee.com/mirrors/nvm/raw/v0.40.1/install.sh"; do',
 		'          info "trying $src"',
 		'          if have curl; then',
-		'            curl -fsSL "$src" -o /tmp/pi-migrate-nvm.sh 2>/dev/null || continue',
-		'            bash /tmp/pi-migrate-nvm.sh >/dev/null 2>&1 && NVM_OK=yes && break',
+		'            curl -fsSL "$src" -o /tmp/pi-ship-nvm.sh 2>/dev/null || continue',
+		'            bash /tmp/pi-ship-nvm.sh >/dev/null 2>&1 && NVM_OK=yes && break',
 		'          elif have wget; then',
-		'            wget -qO /tmp/pi-migrate-nvm.sh "$src" 2>/dev/null || continue',
-		'            bash /tmp/pi-migrate-nvm.sh >/dev/null 2>&1 && NVM_OK=yes && break',
+		'            wget -qO /tmp/pi-ship-nvm.sh "$src" 2>/dev/null || continue',
+		'            bash /tmp/pi-ship-nvm.sh >/dev/null 2>&1 && NVM_OK=yes && break',
 		'          fi',
 		'        done',
 		'        if [ "$NVM_OK" = no ] && have git; then',
@@ -415,8 +458,8 @@ export function generateRunbook(m: ShipManifest): string {
 		'        22) NS=22 ;; 24) NS=24 ;; *) NS=24 ;;',
 		'      esac',
 		'      if have curl && have sudo; then',
-		'        curl -fsSL "https://deb.nodesource.com/setup_${NS}.x" -o /tmp/pi-migrate-ns.sh \\',
-		'          && sudo -n bash /tmp/pi-migrate-ns.sh >/dev/null 2>&1 \\',
+		'        curl -fsSL "https://deb.nodesource.com/setup_${NS}.x" -o /tmp/pi-ship-ns.sh \\',
+		'          && sudo -n bash /tmp/pi-ship-ns.sh >/dev/null 2>&1 \\',
 		'          && sudo -n apt-get install -y nodejs >/dev/null 2>&1 \\',
 		'          && info "node installed system-wide" \\',
 		'          || warn "NodeSource install failed (sudo may need a password) — use nvm instead"',
@@ -487,19 +530,36 @@ export function generateRunbook(m: ShipManifest): string {
 		L.push(
 			"# Versions are pinned to the exact builds on the source machine.",
 			"# `pi install` takes ONE source per call; failures are collected, not fatal.",
+			"#",
+			"# INCREMENTAL: a package this machine already has is left completely",
+			"# untouched - not upgraded, not downgraded. `pi install` has no",
+			"# already-installed semantics: it rewrites the settings.json entry and",
+			"# reinstalls, so applying an older bundle to a newer machine could",
+			"# silently downgrade it. Pass --update-existing to upgrade instead.",
 			'if want extensions; then',
-			'  PI_FAILED=()',
+			'  PI_FAILED=(); PI_SKIPPED=()',
 		);
 		for (const e of m.layers.extensions) {
-			L.push(`  # ${e.source}${e.version ? `  (pinned ${e.version})` : ""}`);
-			L.push(`  if doit pi install ${sh(e.spec)}; then :; else PI_FAILED+=(${sh(e.name)}); fi`);
+			L.push(
+				`  # ${e.source}${e.version ? `  (pinned ${e.version})` : ""}`,
+				`  if pkg_installed ${sh(e.name)}; then`,
+				'    if [ "$UPDATE_EXISTING" = 1 ]; then',
+				`      if doit pi install ${sh(e.spec)}; then :; else PI_FAILED+=(${sh(e.name)}); fi`,
+				"    else",
+				`      ok "${e.name} (already installed - left as-is)"; PI_SKIPPED+=(${sh(e.name)})`,
+				"    fi",
+				`  elif doit pi install ${sh(e.spec)}; then :; else PI_FAILED+=(${sh(e.name)}); fi`,
+			);
 		}
 		L.push(
+			'  if [[ ${#PI_SKIPPED[@]} -gt 0 ]]; then',
+			'    info "${#PI_SKIPPED[@]} already present, left untouched (--update-existing upgrades)"',
+			"  fi",
 			'  if [[ ${#PI_FAILED[@]} -gt 0 ]]; then',
 			'    warn "these failed: ${PI_FAILED[*]}"',
 			'    info "the rest of the migration continues; re-run to retry."',
-			'  fi',
-			'fi',
+			"  fi",
+			"fi",
 			"",
 		);
 	}
@@ -507,16 +567,29 @@ export function generateRunbook(m: ShipManifest): string {
 	// ── step: local extensions ──────────────────────────────────────────────
 	if (m.layers.localExtensions.length > 0) {
 		step(bump(), `copy ${m.layers.localExtensions.length} local extension file(s)`);
-		L.push('if want extensions; then', '  doit mkdir -p "$AGENT_DIR/extensions"');
+		L.push(
+			"# INCREMENTAL: an extension this machine already has is never overwritten.",
+			"# A file only this bundle provides is added. When both exist and differ, the",
+			"# bundled copy lands as <name>.pi-ship-new for you to diff.",
+			'if want extensions; then',
+			'  doit mkdir -p "$AGENT_DIR/extensions"',
+		);
 		for (const le of m.layers.localExtensions) {
 			const dest = `"$AGENT_DIR/extensions/${le.bundlePath}"`;
+			const incoming = `"$BUNDLE_DIR/extensions/${le.bundlePath}"`;
 			L.push(
 				`  # ${le.bundlePath}`,
-				`  if [ -f ${dest} ] && cmp -s "$BUNDLE_DIR/extensions/${le.bundlePath}" ${dest}; then`,
-				`    ok "extensions/${le.bundlePath}"`,
-				"  else",
+				`  if [ ! -f ${dest} ]; then`,
 				`    doit mkdir -p "$(dirname ${dest})"`,
-				`    doit cp "$BUNDLE_DIR/extensions/${le.bundlePath}" ${dest}`,
+				`    doit cp ${incoming} ${dest}`,
+				`  elif cmp -s ${incoming} ${dest}; then`,
+				`    ok "extensions/${le.bundlePath} (identical)"`,
+				'  elif [ "$UPDATE_EXISTING" = 1 ]; then',
+				`    doit cp ${dest} ${dest}.bak-pi-ship`,
+				`    doit cp ${incoming} ${dest}`,
+				"  else",
+				`    doit cp ${incoming} ${dest}.pi-ship-new`,
+				`    info "extensions/${le.bundlePath} kept - bundled copy at extensions/${le.bundlePath}.pi-ship-new"`,
 				"  fi",
 			);
 		}
@@ -543,16 +616,29 @@ export function generateRunbook(m: ShipManifest): string {
 	// ── step: config files ──────────────────────────────────────────────────
 	if (m.layers.configFiles.length > 0) {
 		step(bump(), `copy ${m.layers.configFiles.length} config file(s)`);
-		L.push('if want config; then');
+		L.push(
+			"# INCREMENTAL: an existing file is never overwritten. What this machine",
+			"# already has wins; the bundled copy is written alongside as",
+			"# <name>.pi-ship-new so you can diff it and adopt it by hand.",
+			"# Pass --update-existing to overwrite instead (keeping a .bak-pi-ship).",
+			'if want config; then',
+		);
 		for (const c of m.layers.configFiles) {
 			const dest = `"$AGENT_DIR/${c.targetRel}"`;
+			const incoming = `"$BUNDLE_DIR/config/${c.bundlePath}"`;
 			L.push(
 				`  # ${c.bundlePath}${c.redacted ? " (secrets redacted to $VARS)" : ""}`,
-				`  if [ -f ${dest} ] && cmp -s "$BUNDLE_DIR/config/${c.bundlePath}" ${dest}; then`,
-				`    ok "${c.bundlePath}"`,
+				`  if [ ! -f ${dest} ]; then`,
+				`    doit mkdir -p "$(dirname ${dest})"`,
+				`    doit cp ${incoming} ${dest}`,
+				`  elif cmp -s ${incoming} ${dest}; then`,
+				`    ok "${c.bundlePath} (identical)"`,
+				'  elif [ "$UPDATE_EXISTING" = 1 ]; then',
+				`    doit cp ${dest} ${dest}.bak-pi-ship`,
+				`    doit cp ${incoming} ${dest}`,
 				"  else",
-				`    if [ -f ${dest} ]; then doit cp ${dest} ${dest}.bak-pi-migrate; fi`,
-				`    doit cp "$BUNDLE_DIR/config/${c.bundlePath}" ${dest}`,
+				`    doit cp ${incoming} ${dest}.pi-ship-new`,
+				`    info "${c.bundlePath} kept - bundled copy at ${c.targetRel}.pi-ship-new (diff it)"`,
 				"  fi",
 			);
 		}
@@ -625,7 +711,7 @@ export function generateRunbook(m: ShipManifest): string {
 		'  add_dir "$NODE_DIR"',
 		'  # Write to every profile a future shell might read, so pi is found from',
 		'  # login shells, interactive shells, and non-interactive scripts alike.',
-		'  MARK="# pi-migrate: node/pi on PATH"',
+		'  MARK="# pi-ship: node/pi on PATH"',
 		'  LINE="export PATH=\\\"$PATH_DIRS:\\$PATH\\\""',
 		'  PROFILES="$HOME/.profile"',
 		'  case "$SHELL" in',
@@ -692,7 +778,7 @@ export function generateRunbook(m: ShipManifest): string {
 
 	L.push(
 		"",
-		"title \"pi-migrate: migration complete\"",
+		"title \"pi-ship: migration complete\"",
 		'if [ "$FAILED" -gt 0 ]; then',
 		'  warn "$FAILED check(s) did not pass — see above."',
 		"else",
@@ -713,7 +799,7 @@ export function generateRunbook(m: ShipManifest): string {
 
 /** Deep-merge shipped providers into an existing models.json. */
 export const MERGE_MODELS_MJS = `#!/usr/bin/env node
-// pi-migrate — merge shipped providers into models.json.
+// pi-ship — merge shipped providers into models.json.
 // Existing providers always win: this machine's configuration is preserved.
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from "node:fs";
 
@@ -741,16 +827,16 @@ if (added.length === 0) {
   process.exit(0);
 }
 
-if (existsSync(target)) copyFileSync(target, \`\${target}.bak-pi-migrate\`);
+if (existsSync(target)) copyFileSync(target, \`\${target}.bak-pi-ship\`);
 writeFileSync(target, JSON.stringify(t, null, 2) + "\\n");
 if (added.length) console.log(\`  ~ added providers: \${added.join(", ")}\`);
 if (kept.length)  console.log(\`  = left untouched:   \${kept.join(", ")}\`);
-console.log(\`  backup: \${target}.bak-pi-migrate\`);
+console.log(\`  backup: \${target}.bak-pi-ship\`);
 `;
 
 /** Merge portable settings keys into an existing settings.json. */
 export const MERGE_SETTINGS_MJS = `#!/usr/bin/env node
-// pi-migrate — merge portable settings keys. Only keys the bundle carries change.
+// pi-ship — merge portable settings keys. Only keys the bundle carries change.
 import { readFileSync, writeFileSync, existsSync, copyFileSync } from "node:fs";
 
 const [target, incoming] = process.argv.slice(2);
@@ -773,7 +859,7 @@ for (const [k, v] of Object.entries(i)) {
 
 if (changed.length === 0) { console.log("  = settings already match"); process.exit(0); }
 
-if (existsSync(target)) copyFileSync(target, \`\${target}.bak-pi-migrate\`);
+if (existsSync(target)) copyFileSync(target, \`\${target}.bak-pi-ship\`);
 writeFileSync(target, JSON.stringify(t, null, 2) + "\\n");
 for (const c of changed) console.log(\`  ~ \${c}\`);
 `;
@@ -792,7 +878,7 @@ export function generateReadme(m: ShipManifest): string {
 		"- (none)";
 	const locals = m.layers.localExtensions.map((l) => `- \`${l.bundlePath}\``).join("\n") || "- (none)";
 
-	return `# pi-migrate bundle
+	return `# pi-ship bundle
 
 Generated ${m.createdAt} from **${m.source.hostname}** (${m.source.platform}/${m.source.arch}).
 
@@ -828,7 +914,7 @@ ${cfgs}
 
 - **Existing values are never overwritten.** Providers, settings and secrets
   already present on the target are left untouched; changed files are backed up
-  to \`*.bak-pi-migrate\`.
+  to \`*.bak-pi-ship\`.
 - **No plaintext credentials in the bundle.** Literal secrets found at export
   were replaced with \`$VAR\` references.
 - **Idempotent.** Re-running skips satisfied steps.
@@ -843,3 +929,44 @@ ${
 			: ""
 	}`;
 }
+/**
+ * Emitted as bin/has-package.mjs.
+ *
+ * Answers "does this machine already have package X?" for the package layer.
+ * `pi install <spec>` has no already-installed semantics, so the runbook has to
+ * decide for itself; this keeps the settings.json parsing out of bash.
+ */
+export const HAS_PACKAGE_MJS = `#!/usr/bin/env node
+// pi-ship - exit 0 when <settings.json> already lists package <name>.
+// Match is by bare package name, ignoring any version or git ref, so an
+// installed package counts as present regardless of which version it is.
+import { readFileSync } from "node:fs";
+
+const [settingsPath, want] = process.argv.slice(2);
+if (!settingsPath || !want) {
+  console.error("usage: has-package.mjs <settings.json> <package-name>");
+  process.exit(2);
+}
+
+// "npm:@scope/pkg@1.2.3" -> "@scope/pkg"; "npm:pkg@1.2.3" -> "pkg";
+// "git:github.com/o/r@v1" -> "github.com/o/r"
+function bareName(spec) {
+  let s = String(spec).replace(/^(npm|git):/, "");
+  if (s.startsWith("@")) {
+    const slash = s.indexOf("/");
+    if (slash < 0) return s;
+    return s.slice(0, slash + 1) + s.slice(slash + 1).split("@")[0];
+  }
+  return s.split("@")[0];
+}
+
+let settings;
+try {
+  settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+} catch {
+  process.exit(1);
+}
+
+const packages = Array.isArray(settings?.packages) ? settings.packages : [];
+process.exit(packages.some((p) => bareName(p) === want) ? 0 : 1);
+`;
