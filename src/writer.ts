@@ -78,8 +78,9 @@ export async function writeBundle(
 	writeFileSync(join(outDir, "bin", "merge-models.mjs"), MERGE_MODELS_MJS);
 	track(join(outDir, "bin", "merge-models.mjs"));
 	writeFileSync(join(outDir, "bin", "merge-settings.mjs"), MERGE_SETTINGS_MJS);
-	writeFileSync(join(outDir, "bin", "has-package.mjs"), HAS_PACKAGE_MJS);
 	track(join(outDir, "bin", "merge-settings.mjs"));
+	writeFileSync(join(outDir, "bin", "has-package.mjs"), HAS_PACKAGE_MJS);
+	track(join(outDir, "bin", "has-package.mjs"));
 
 	// ── env templates ───────────────────────────────────────────────────────
 	const envExample = join(outDir, ".env.example");

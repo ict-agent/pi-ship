@@ -354,4 +354,41 @@ grep -q 'SHIP_KINDS="${arg#--kinds=}"' "$KIND_OUT/install.sh" \
   || fail "--kinds parses the wrong variable"
 
 echo
+say "11. the reported file list matches what is actually on disk"
+
+# The export summary lists the files it wrote. `bin/has-package.mjs` was written
+# directly instead of through the tracking helper, so it existed on disk but was
+# missing from the summary — which made the report quietly wrong.
+LISTED=$(node --experimental-strip-types -e '
+import { collect } from "./src/collect.ts";
+import { writeBundle } from "./src/writer.ts";
+const dir = process.argv[1];
+const m = collect({ outDir: dir });
+const r = await writeBundle(m, dir, { force: true, secrets: {} });
+console.log(JSON.stringify(r.files));
+' /tmp/pi-ship-selftest/files 2>/dev/null)
+
+if [ -d /tmp/pi-ship-selftest/files ]; then
+  pass "export produced a bundle to inspect"
+else
+  fail "export produced no bundle"
+fi
+
+# Every top-level file the runbook needs must be listed.
+for want in "install.sh" "pi-ship.json" "bin/has-package.mjs" "bin/merge-models.mjs" "bin/merge-settings.mjs"; do
+  case "$LISTED" in
+    *"$want"*) pass "reported file list includes $want" ;;
+    *) fail "$want is written but missing from the reported file list" ;;
+  esac
+done
+
+# And nothing listed may be absent on disk.
+MISSING=0
+for f in $(printf '%s' "$LISTED" | tr -d '[]"' | tr ',' '\n'); do
+  [ -f "/tmp/pi-ship-selftest/files/$f" ] || { MISSING=$((MISSING+1)); echo "    absent: $f"; }
+done
+[ "$MISSING" -eq 0 ] && pass "every listed file exists on disk" \
+  || fail "$MISSING listed file(s) do not exist"
+
+echo
 if [ "$FAIL" = 0 ]; then printf '\033[32mALL CHECKS PASSED\033[0m\n'; else printf '\033[31mSOME CHECKS FAILED\033[0m\n'; exit 1; fi

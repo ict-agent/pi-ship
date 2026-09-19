@@ -1,58 +1,59 @@
 {
-  "name": "pi-ship",
-  "version": "0.1.0",
-  "description": "Ship a pi setup between machines: snapshot pinned extensions, providers and user config into a portable bundle, then replay it incrementally with a self-checking interactive runbook.",
-  "type": "module",
-  "license": "MIT",
-  "homepage": "https://github.com/ict-agent/pi-ship#readme",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ict-agent/pi-ship.git"
-  },
-  "bugs": {
-    "url": "https://github.com/ict-agent/pi-ship/issues"
-  },
-  "keywords": [
-    "pi-package",
-    "pi",
-    "migration",
-    "dotfiles",
-    "bootstrap",
-    "provisioning",
-    "backup",
-    "restore",
-    "coding-agent"
-  ],
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "files": [
-    "src",
-    "README.md",
-    "MIGRATION.md",
-    "LICENSE"
-  ],
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "typebox": {
-      "optional": true
-    }
-  },
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "scripts": {
-    "test": "./test.sh"
-  },
-  "publishConfig": {
-    "access": "public"
-  }
+	"name": "pi-ship",
+	"version": "0.1.0",
+	"description": "Ship a pi setup between machines: snapshot pinned extensions, providers and user config into a portable bundle, then replay it incrementally with a self-checking interactive runbook.",
+	"type": "module",
+	"license": "MIT",
+	"homepage": "https://github.com/ict-agent/pi-ship#readme",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ict-agent/pi-ship.git"
+	},
+	"bugs": {
+		"url": "https://github.com/ict-agent/pi-ship/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"migration",
+		"dotfiles",
+		"bootstrap",
+		"provisioning",
+		"backup",
+		"restore",
+		"coding-agent"
+	],
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"files": [
+		"src",
+		"README.md",
+		"MIGRATION.md",
+		"LICENSE"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		},
+		"typebox": {
+			"optional": true
+		}
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"scripts": {
+		"test": "./test.sh"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
 }

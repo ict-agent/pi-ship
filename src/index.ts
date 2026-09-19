@@ -11,6 +11,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -211,23 +212,43 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				const missing = manifest.requiredEnv.filter((n) => !secrets[n]);
-				ctx.ui.notify(
+				// Report through a *persistent* entry, not a toast. `ui.notify` is a
+				// transient banner: a multi-line report scrolls away before it can be
+				// read, which looks exactly like "the command did nothing".
+				// appendEntry keeps it in the transcript and stays out of LLM context.
+				const lines = [
+					`bundle written: ${result.dir}`,
+					"",
 					[
-						`bundle written: ${result.dir}`,
-						[
-							`${manifest.layers.extensions.length} packages`,
-							`${manifest.layers.localExtensions.length} local extensions`,
-							opts.providers ? `${manifest.layers.providers.length} providers` : "providers: not included",
-							opts.configFiles ? `${manifest.layers.configFiles.length} config files` : "config: not included",
-						].join(" · "),
-						carryKeys
-							? `secrets carried: ${result.carriedSecrets.join(", ") || "(none found in env)"}`
-							: "secrets: names only (re-run with --with-keys to carry values)",
-						missing.length ? `not found in env: ${missing.join(", ")}` : "",
-						manifest.warnings.length ? `⚠ ${manifest.warnings.length} warning(s) — see README.md` : "",
-					]
-						.filter(Boolean)
-						.join("\n"),
+						`${manifest.layers.extensions.length} packages`,
+						`${manifest.layers.localExtensions.length} local extensions`,
+						opts.providers
+							? `${manifest.layers.providers.length} providers`
+							: "providers: not included (--providers)",
+						opts.configFiles
+							? `${manifest.layers.configFiles.length} config files`
+							: "config: not included (--config)",
+					].join(" · "),
+					carryKeys
+						? `secrets carried: ${result.carriedSecrets.join(", ") || "(none found in env)"}`
+						: "secrets: names only in .env.example (--with-keys carries values)",
+				];
+				if (missing.length) {
+					lines.push(`not found in env: ${missing.join(", ")} — set these on the target`);
+				}
+				if (manifest.warnings.length) {
+					// Print the warnings themselves. Hiding them behind "see README"
+					// meant a package could silently fail to ship.
+					lines.push("", `${manifest.warnings.length} warning(s):`);
+					for (const w of manifest.warnings) lines.push(`  • ${w}`);
+				}
+				lines.push("", "next: copy this directory to the target and run ./install.sh");
+
+				pi.appendEntry("pi-ship-export", { lines });
+				ctx.ui.notify(
+					manifest.warnings.length
+						? `pi-ship: bundle written (${manifest.warnings.length} warning(s) — see above)`
+						: `pi-ship: bundle written → ${result.dir}`,
 					manifest.warnings.length ? "warning" : "info",
 				);
 				return;
@@ -317,6 +338,14 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix) => completeShipArgs(prefix),
 	});
 
+	// Render the export report as a card in the transcript. Without a renderer
+	// the entry is stored but shows nothing in the TUI, so the command would
+	// still look like it did nothing.
+	pi.registerEntryRenderer("pi-ship-export", (entry, _opts, theme) => {
+		const data = entry.data as { lines?: string[] } | undefined;
+		const text = (data?.lines ?? []).join("\n");
+		return new Text(theme.bg("customMessageBg", `\n${text}\n`));
+	});
 	pi.registerCommand("migrate", {
 		description: "Alias of /ship — migrate a pi setup between machines",
 		handler: commandHandler,
