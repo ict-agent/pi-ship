@@ -11,7 +11,6 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -212,10 +211,9 @@ export default function (pi: ExtensionAPI) {
 				});
 
 				const missing = manifest.requiredEnv.filter((n) => !secrets[n]);
-				// Report through a *persistent* entry, not a toast. `ui.notify` is a
-				// transient banner: a multi-line report scrolls away before it can be
-				// read, which looks exactly like "the command did nothing".
-				// appendEntry keeps it in the transcript and stays out of LLM context.
+				// Report through pi.sendMessage, not ui.notify. notify is a transient
+				// banner: a multi-line report scrolls away before it can be read, which
+				// looks exactly like "the command did nothing".
 				const lines = [
 					`bundle written: ${result.dir}`,
 					"",
@@ -244,13 +242,16 @@ export default function (pi: ExtensionAPI) {
 				}
 				lines.push("", "next: copy this directory to the target and run ./install.sh");
 
-				pi.appendEntry("pi-ship-export", { lines });
-				ctx.ui.notify(
-					manifest.warnings.length
-						? `pi-ship: bundle written (${manifest.warnings.length} warning(s) — see above)`
-						: `pi-ship: bundle written → ${result.dir}`,
-					manifest.warnings.length ? "warning" : "info",
-				);
+				// A command must surface its result through pi.sendMessage. An error
+				// thrown from the handler is displayed by pi core, but appendEntry
+				// only emits a TUI-facing event — the card it produced was repainted
+				// away as soon as the command returned, so a *successful* export
+				// looked like it had printed nothing at all.
+				pi.sendMessage({
+					customType: "pi-ship-export",
+					content: lines.join("\n"),
+					display: true,
+				});
 				return;
 			}
 
@@ -338,14 +339,6 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix) => completeShipArgs(prefix),
 	});
 
-	// Render the export report as a card in the transcript. Without a renderer
-	// the entry is stored but shows nothing in the TUI, so the command would
-	// still look like it did nothing.
-	pi.registerEntryRenderer("pi-ship-export", (entry, _opts, theme) => {
-		const data = entry.data as { lines?: string[] } | undefined;
-		const text = (data?.lines ?? []).join("\n");
-		return new Text(theme.bg("customMessageBg", `\n${text}\n`));
-	});
 	pi.registerCommand("migrate", {
 		description: "Alias of /ship — migrate a pi setup between machines",
 		handler: commandHandler,
