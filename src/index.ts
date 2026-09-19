@@ -19,7 +19,7 @@ import { collect } from "./collect.ts";
 import { formatPlan, planBundle, readManifest, verifyBundle } from "./bundle.ts";
 import { writeBundle } from "./writer.ts";
 import { findNode, formatPreflight, preflight, PI_NODE_MIN } from "./preflight.ts";
-import type { ExportOptions } from "./types.ts";
+import type { ExportOptions, PackageKind } from "./types.ts";
 
 type ParsedArgs = {
 	positional: string[];
@@ -53,6 +53,83 @@ function defaultOutDir(): string {
 	return resolve(process.cwd(), `pi-ship-${host}-${stamp}`);
 }
 
+/** The package source kinds pi-ship can replay on another machine. */
+const KNOWN_KINDS: PackageKind[] = ["npm", "git", "url"];
+
+/**
+ * Resolve a user-supplied kind list, rejecting anything we cannot replay.
+ *
+ * Returning undefined means "no restriction" (all replayable kinds). An empty
+ * result is treated the same way, so a typo cannot silently produce a bundle
+ * with no packages at all — that failure would be baffling.
+ */
+function normalizeKinds(raw: unknown): PackageKind[] | undefined {
+	if (!Array.isArray(raw) || raw.length === 0) return undefined;
+	const wanted = raw
+		.map((k) => String(k).trim().toLowerCase())
+		.filter((k): k is PackageKind => (KNOWN_KINDS as string[]).includes(k));
+	if (wanted.length === 0) return undefined;
+	return [...new Set(wanted)];
+}
+
+/** Parse `--kinds=a,b`. Deliberately lenient for the same reason as above. */
+function parseKinds(value: string | undefined): PackageKind[] | undefined {
+	if (!value) return undefined;
+	return normalizeKinds(value.split(","));
+}
+
+/**
+ * Tab completions for `/ship <TAB>`.
+ *
+ * Each entry pairs the literal to insert with a one-line explanation of what it
+ * does, so the command is usable without reading any docs. Once a subcommand is
+ * already typed we offer its flags instead of the subcommand list again.
+ */
+function completeShipArgs(prefix: string): { value: string; label: string; description?: string }[] {
+	const items: { value: string; label: string; description?: string }[] = [];
+
+	const subcommands = [
+		{ value: "export", label: "export", description: "打包本机配置（最常用，不带任何参数就是默认导出）" },
+		{ value: "export --providers --config", label: "export --providers --config", description: "连模型 provider 和配置文件一起打包" },
+		{ value: "export --with-keys", label: "export --with-keys", description: "连密钥值一起打包（目标机只补自己缺的）" },
+		{ value: "inspect", label: "inspect", description: "看看某个 bundle 里有什么" },
+		{ value: "plan", label: "plan", description: "如果装到本机，会改哪些东西（不写盘）" },
+		{ value: "verify", label: "verify", description: "检查本机是否已符合某个 bundle" },
+		{ value: "preflight", label: "preflight", description: "本机是否具备接收 bundle 的条件" },
+		{ value: "help", label: "help", description: "显示完整用法说明" },
+	];
+
+	// Flags shown once a subcommand has been chosen.
+	const flags: Record<string, { value: string; label: string; description: string }[]> = {
+		export: [
+			{ value: "--providers", label: "--providers", description: "带上 models.json 里的 provider（密钥会被脱敏）" },
+			{ value: "--config", label: "--config", description: "带上 web-search.json 等用户配置文件" },
+			{ value: "--with-keys", label: "--with-keys", description: "把密钥值写进 .secrets.env，目标机加法式应用" },
+			{ value: "--kinds=npm,git", label: "--kinds=npm,git", description: "只带这些来源的包（可选 npm / git / url）" },
+			{ value: "--out=", label: "--out=DIR", description: "输出目录（默认 pi-ship-<主机>-<日期>）" },
+			{ value: "--force", label: "--force", description: "输出目录已存在时覆盖它" },
+		],
+	};
+
+	const firstWord = prefix.trim().split(/\s+/)[0] ?? "";
+	// Note: test the RAW prefix for a space. `"export "` has no leading word
+	// separator once trimmed, but the user has clearly finished the subcommand
+	// and wants its flags — so trimming first here would show the wrong list.
+	const hasArgSep = /\s/.test(prefix);
+
+	if (hasArgSep && flags[firstWord]) {
+		const last = prefix.trim().split(/\s+/).pop() ?? "";
+		if (last === firstWord) return flags[firstWord];
+		const matches = flags[firstWord].filter((f) => f.value.startsWith(last));
+		return matches.length ? matches : flags[firstWord];
+	}
+
+	for (const s of subcommands) {
+		if (s.value.startsWith(prefix.trim()) || prefix.trim() === "") items.push(s);
+	}
+	return items;
+}
+
 /**
  * Gather the values for the secret names a bundle needs, straight from this
  * process's environment. This is what makes "carry my keys" possible without
@@ -78,16 +155,37 @@ export default function (pi: ExtensionAPI) {
 			if (sub === "help") {
 				ctx.ui.notify(
 					[
-						"/ship export [--providers] [--config] [--with-keys] [--out=DIR]",
-						"  snapshot extensions (default); --providers/--config add optional layers",
-						"  --with-keys carries secret VALUES, applied additively on the target",
-						"/ship preflight [<bundle>] — is this machine ready to receive a bundle?",
-						"/ship plan <bundle>     — what applying it here would change (writes nothing)",
-						"/ship verify <bundle>   — check this machine matches the bundle",
-						"/ship inspect <bundle>  — summarise a bundle's contents",
+						"pi-ship — 把这台机器的 pi 配置打包，搬到另一台机器",
+						"",
+						"【最常用】直接导出（扩展 + 散装扩展 + 可移植设置）",
+						"    /ship export",
+						"",
+						"【想连模型 provider 和配置文件一起搬】",
+						"    /ship export --providers --config",
+						"",
+						"【连密钥值也带走】在上面基础上加 --with-keys",
+						"    目标机只会补自己缺的，已有同名变量绝不覆盖",
+						"",
+						"默认导出到当前目录 pi-ship-<主机名>-<日期>/",
+						"换目录：--out=/path  覆盖已有：--force",
+						"",
+						"【导出后得到什么】",
+						"一个目录，里面 install.sh 就是安装脚本。",
+						"拷到目标机后跑：  ./install.sh          （交互，会问你几个问题）",
+						"                  ./install.sh --dry-run（先预演，什么都不改）",
+						"",
+						"【在你当前这台机器上能跑的其他命令】",
+						"    /ship inspect <bundle>  — 看看某个 bundle 里有什么",
+						"    /ship plan <bundle>     — 如果装到这里，会改哪些东西（不写盘）",
+						"    /ship verify <bundle>   — 检查本机是否已符合该 bundle",
+						"    /ship preflight         — 本机是否具备接收条件",
+						"",
+						"【进阶】只带某些来源的包",
+						"    /ship export --kinds=npm,git   （可选项：npm git url）",
+						"    默认三类都带；本地路径包永远不带（换机器没意义）",
 					].join("\n"),
-					"info",
-				);
+						"info",
+					);
 				return;
 			}
 
@@ -99,6 +197,7 @@ export default function (pi: ExtensionAPI) {
 					configFiles: parsed.flags.has("config"),
 					providerNames: parsed.values.get("provider")?.split(","),
 					configFileNames: parsed.values.get("file")?.split(","),
+					packageKinds: parseKinds(parsed.values.get("kinds")),
 				};
 
 				const manifest = collect(opts);
@@ -211,20 +310,31 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("ship", {
-		description: "Snapshot this pi setup into a portable bundle, or plan/verify applying one",
+		description: "Package this pi setup into a bundle you can install on another machine",
 		handler: commandHandler,
+		// Tab-completable subcommands. Without these the command is a blank
+		// prompt: you have to already know the verbs to use it.
+		getArgumentCompletions: (prefix) => completeShipArgs(prefix),
 	});
 
 	pi.registerCommand("migrate", {
 		description: "Alias of /ship — migrate a pi setup between machines",
 		handler: commandHandler,
+		getArgumentCompletions: (prefix) => completeShipArgs(prefix),
 	});
 
 	pi.registerTool({
 		name: "ship",
 		label: "pi-ship",
 		description:
-			"Snapshot this machine's pi setup (installed extension packages with pinned versions, optionally model providers and user config files) into a portable bundle directory containing a Dockerfile-style install.sh runbook. Also plans or verifies applying an existing bundle. Ships configuration only — never the pi binary and never plaintext credentials.",
+			"Move this machine's pi setup to another machine. Generates a bundle directory " +
+			"whose install.sh recreates the setup on the target. " +
+			"Use action=export to snapshot THIS machine (the common case); use " +
+			"action=inspect/plan/verify to examine a bundle you already have. " +
+			"Minimal call: {action:'export'} — that already includes extension packages, loose " +
+			"extensions and portable settings. Add includeProviders/includeConfig for those " +
+			"extra layers. Output defaults to ./pi-ship-<host>-<date>. " +
+			"Ships configuration only — never the pi binary and never plaintext credentials.",
 		parameters: Type.Object({
 			action: Type.Union(
 				[
@@ -234,10 +344,11 @@ export default function (pi: ExtensionAPI) {
 					Type.Literal("verify"),
 					Type.Literal("inspect"),
 				],
-				{ description: "export = snapshot this machine; preflight = is this machine ready; plan/verify/inspect = examine a bundle" },
+				{ description: "export = snapshot THIS machine into a bundle; preflight = is this machine ready to receive one; plan/verify/inspect = examine an existing bundle" },
 			),
-			outDir: Type.Optional(Type.String({ description: "export: output directory" })),
-			bundleDir: Type.Optional(Type.String({ description: "plan/verify/inspect: bundle directory" })),
+			outDir: Type.Optional(Type.String({ description: "export: output directory (default pi-ship-<host>-<date> in cwd)" })),
+			bundleDir: Type.Optional(Type.String({ description: "plan/verify/inspect: bundle directory produced by an earlier export" })),
+			force: Type.Optional(Type.Boolean({ description: "export: overwrite outDir if it already exists" })),
 			includeProviders: Type.Optional(
 				Type.Boolean({ description: "export: include model providers from models.json (secrets redacted)" }),
 			),
@@ -253,10 +364,15 @@ export default function (pi: ExtensionAPI) {
 			providerNames: Type.Optional(
 				Type.Array(Type.String(), { description: "export: limit providers to these names" }),
 			),
+			packageKinds: Type.Optional(
+				Type.Array(Type.String(), {
+					description:
+						"export: which package source kinds to carry — any of npm, git, url. Omit for all replayable kinds. Local-path packages are never carried because pi stores them as machine-specific pointers.",
+				}),
+			),
 			configFileNames: Type.Optional(
 				Type.Array(Type.String(), { description: "export: limit config files to these basenames" }),
 			),
-			force: Type.Optional(Type.Boolean({ description: "export: overwrite an existing output directory" })),
 		}),
 		async execute(_id, params) {
 			try {
@@ -267,6 +383,7 @@ export default function (pi: ExtensionAPI) {
 						configFiles: params.includeConfig ?? false,
 						providerNames: params.providerNames,
 						configFileNames: params.configFileNames,
+						packageKinds: normalizeKinds(params.packageKinds),
 					};
 					const manifest = collect(opts);
 					const secrets = params.carryKeys ? gatherSecrets(manifest.requiredEnv) : {};

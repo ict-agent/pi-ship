@@ -45,6 +45,29 @@ pi-ship-<host>-<date>/
 
 指定输出目录：`--out=/path/to/dir`，覆盖已有：`--force`。
 
+### 选挈带哪些包来源（可选）
+
+`settings.json` 里的包可以写成多种形态，`--kinds` 让你只带其中几种：
+
+```
+/ship export --kinds=npm            # 只带 npm 包
+/ship export --kinds=npm,git        # 不带 URL 来源的包
+/ship export                        # 默认：npm + git + url 全带
+```
+
+| 写法 | kind | 是否导出 |
+|---|---|---|
+| `npm:pkg@1.0.0` | `npm` | ✅ 锁定到已装版本 |
+| `git:host/path@ref` | `git` | ✅ 锁定到 commit |
+| `https://host/path` | `url` | ✅ 锁定到 commit |
+| `ssh://git@host/path` | `url` | ✅ 锁定到 commit |
+| 绝对/相对路径、裸名 | — | ❌ 见「已知限制」 |
+| `github:owner/repo` | — | ❌ pi 自己解析不了 |
+| `git://host/path` | — | ❌ 与 `git:` 前缀冲突 |
+
+URL 形态不需要目标机做任何特殊处理：pi 内部把 `git:`、`https://`、`ssh://` 都交给同一个解析器，
+所以 pi-ship 统一按 `git:` 安装路径重放。`url` 这个 kind 只是为了让你选的时候能区分。
+
 导出后会自动汇报：包数 / provider 数 / 配置数 / 是否带了密钥 / 警告。
 
 ---
@@ -107,6 +130,18 @@ pi-ship 结果 rpiv-btw 2.10.1   ← 不动
 
 因此 runbook 自己判断：从 spec 里解析出**裸包名**（正确剥离 `npm:` / `git:` 前缀
 和版本号，`@scope/name` 也能处理），查目标机是否已有，只装缺的。
+
+### 选接受哪些包来源（可选）
+
+目标机可以拒收某些来源的包；被拒的包会被跳过并报告，不会当成"缺失"报错：
+
+```
+./install.sh --kinds=npm,git    # 不接受 URL 来源的包
+./install.sh                    # 默认：bundle 里有什么就接受什么
+```
+
+不传或传空值 = 全部接受。传了一个都不认识的 kind（如 `--kinds=xyz`）= 全部拒收，
+而不是静默安装——这个 flag 说什么就是什么。
 
 **文件冲突时**你能同时拿到两份做对比：
 
@@ -231,6 +266,12 @@ pi
 
 ## 7. 已知限制
 
+- **本地路径包不迁移**：`settings.json` 里写成绝对/相对路径的包（如 `/Users/x/pkg`）永远不导出。
+  pi 把它们当**裸指针**——安装时只检查路径存在，从不复制内容，所以没法在其他机器上忠实重放；
+  复制内容又得猜一个目标机路径，等于悄悄改掉你的配置。导出时会以 warning 列出。
+- **两种 spec 形态会被拒绝导出**：`github:owner/repo` 和 `git://host/path`。
+  这两个 pi 自己就装不了（前者 `parseGitUrl` 返回 null，后者的 `git:` 前缀会把 repo 变成 `//host/path`），
+  搬过去只会把坏配置带到新机器。warning 里会给出正确写法（`git:host/path` 或完整 URL）。
 - **OAuth provider 需重新登录**：`openai-codex` 之类的 token 在 `auth.json`，不迁移。目标机上 `/login`。
 - **结果是并集而非快照**：增量语义意味着目标机已有的包、配置、provider 都会保留。
   这是**有意的**——严格快照需要 `pi uninstall` 删除操作，与"已有的不动"直接冲突。
@@ -292,6 +333,7 @@ pi
 ./install.sh --yes                # 无人值守
 ./install.sh --only=extensions    # 只跑某一层
 ./install.sh --update-existing    # 连已装过的包也升级
+./install.sh --kinds=npm,git      # 只接受这些来源的包（可选 npm,git,url）
 ./install.sh --interactive        # 强制交互
 ./install.sh --help
 ```

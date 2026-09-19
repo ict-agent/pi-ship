@@ -19,10 +19,12 @@ import { basename, join, relative } from "node:path";
 import {
 	DEFAULT_CONFIG_FILES,
 	NEVER_SHIP,
+	REPLAYABLE_KINDS,
 	SHIPPABLE_SETTINGS,
 	type ConfigFileEntry,
 	type ExportOptions,
 	type LocalExtension,
+	type PackageKind,
 	type PackageSpec,
 	type ProviderEntry,
 	type ShipManifest,
@@ -87,17 +89,71 @@ export function parseNpmSpec(spec: string): { name: string; range?: string } {
 	return { name: body.slice(0, at), range: body.slice(at + 1) };
 }
 
-/** Split `git:github.com/user/repo@ref` into its pieces. */
+/**
+ * Split a git-ish spec into repo and ref.
+ *
+ * The ref separator is the LAST `@`, but only when it comes after the
+ * authority — an scp-style URL like `ssh://git@host/user/repo` contains an `@`
+ * that belongs to userinfo, not to a ref. Splitting naively there corrupts the
+ * URL (verified: it yielded repo `ssh://git` and ref `host/user/repo`).
+ *
+ * Note a bare `git@host:path` shorthand has no `/` before its `@`, so it is
+ * correctly read as carrying no ref.
+ */
 export function parseGitSpec(spec: string): { repo: string; ref?: string } {
-	const body = spec.slice(4);
+	const body = spec.startsWith("git:") ? spec.slice(4) : spec;
 	const at = body.lastIndexOf("@");
 	if (at === -1) return { repo: body };
+	// Everything before the first `/` is authority ([user@]host[:port]). An `@`
+	// inside it is userinfo, so this spec carries no ref.
+	const slash = body.indexOf("/");
+	const authorityEnd = slash === -1 ? body.length : slash;
+	if (at < authorityEnd) return { repo: body };
 	return { repo: body.slice(0, at), ref: body.slice(at + 1) };
+}
+
+/**
+ * Which kind of source is this?
+ *
+ * Mirrors pi's isLocalPath()/parseGitUrl() split. Two prefixes are reported as
+ * unshippable rather than silently carried, because pi cannot install them:
+ *
+ *   `github:`   isLocalPath() calls it non-local, parseGitUrl() returns null.
+ *   `git://…`   the `git:` prefix wins, leaving repo `//host/path`, which
+ *               parseGitUrl() also rejects. Use `git:host/path` or a full URL.
+ *
+ * Both were verified against pi's own parsers rather than assumed.
+ */
+export function classifySpec(raw: string): PackageKind | "github" | "invalid-git" | "local" {
+	const s = raw.trim();
+	if (s.startsWith("npm:")) return "npm";
+	if (s.startsWith("git://")) return "invalid-git";
+	if (s.startsWith("git:")) return "git";
+	if (/^(https?|ssh):\/\//i.test(s)) return "url";
+	if (s.startsWith("github:")) return "github";
+	return "local";
+}
+
+
+/**
+ * Normalise a git repo reference to pi's on-disk clone directory name.
+ *
+ * pi clones to `~/.pi/agent/git/<host>/<path>`, so a shorthanded spec
+ * (`github.com/user/repo`) already matches while a URL spec
+ * (`https://github.com/user/repo`) carries a scheme and userinfo that must be
+ * stripped first. Verified against this machine's layout, which contains
+ * `github.com/NVlabs/SoL-Pi` for the shorthanded form.
+ */
+function gitClonePath(repo: string): string {
+	return repo
+		.replace(/^[a-z+]+:\/\//i, "")
+		.replace(/^[^@/]*@/, "")
+		.replace(/\/$/, "");
 }
 
 /** Try to resolve the checked-out commit of a git-installed package. */
 function gitHead(repo: string): string | undefined {
-	const dir = join(gitRoot(), repo);
+	const dir = join(gitRoot(), gitClonePath(repo));
 	if (!existsSync(dir)) return undefined;
 	const head = readJson<never>(join(dir, ".git")) as never;
 	void head;
@@ -133,7 +189,10 @@ function gitHead(repo: string): string | undefined {
  * The returned spec is what the runbook will run — already pinned where we
  * could pin it.
  */
-export function collectPackages(warnings: string[]): PackageSpec[] {
+export function collectPackages(
+	warnings: string[],
+	kinds: PackageKind[] = REPLAYABLE_KINDS,
+): PackageSpec[] {
 	const settings = readSettings();
 	const specs = Array.isArray(settings.packages) ? (settings.packages as string[]) : [];
 	const out: PackageSpec[] = [];
@@ -141,7 +200,31 @@ export function collectPackages(warnings: string[]): PackageSpec[] {
 	for (const raw of specs) {
 		if (typeof raw !== "string") continue;
 
-		if (raw.startsWith("npm:")) {
+		const kind = classifySpec(raw);
+
+		if (kind === "github" || kind === "invalid-git") {
+			// pi cannot resolve these, so `pi install` fails on the source machine
+			// too. Shipping them would just move a broken entry across.
+			const hint = kind === "github"
+				? "pi cannot resolve the `github:` prefix; use `git:host/path` or a full URL"
+				: "`git://` collides with the `git:` prefix; use `git:host/path` or `https://host/path`";
+			warnings.push(`not shippable (${hint}): ${raw}`);
+			continue;
+		}
+
+		// Local paths are never shippable, and saying "excluded by --kinds" would
+		// wrongly suggest the user could opt back in via a flag.
+		if (kind === "local") {
+			warnings.push(`local-path package is machine-specific and not shipped: ${raw}`);
+			continue;
+		}
+
+		if (!kinds.includes(kind)) {
+			warnings.push(`excluded by --kinds=${kinds.join(",")}: ${raw}`);
+			continue;
+		}
+
+		if (kind === "npm") {
 			const { name, range } = parseNpmSpec(raw);
 			const installed = installedNpmVersion(name);
 			if (!installed) {
@@ -163,24 +246,25 @@ export function collectPackages(warnings: string[]): PackageSpec[] {
 			continue;
 		}
 
-		if (raw.startsWith("git:")) {
+		if (kind === "git" || kind === "url") {
 			const { repo, ref } = parseGitSpec(raw);
 			const head = gitHead(repo);
 			const pinnedRef = ref ?? head?.slice(0, 12);
 			if (!pinnedRef) {
 				warnings.push(`git package has no resolvable ref: ${raw}`);
 			}
+			// pi resolves `git:`, `https://`, `ssh://` and `git://` through the
+			// same parser, so a URL is replayed as a pinned git spec. Normalising
+			// here means the runbook needs only one install path.
 			out.push({
-				spec: pinnedRef ? `git:${repo}@${pinnedRef}` : raw,
-				kind: "git",
+				spec: pinnedRef ? `git:${repo}@${pinnedRef}` : `git:${repo}`,
+				kind,
 				name: repo,
 				ref: pinnedRef,
 				source: raw,
 			});
 			continue;
 		}
-
-		warnings.push(`unrecognised package spec: ${raw}`);
 	}
 
 	// Local extensions configured via settings.extensions (absolute paths).
@@ -304,7 +388,11 @@ export function collectSettings(): Record<string, unknown> {
 /** Build the full manifest. */
 export function collect(opts: ExportOptions): ShipManifest {
 	const warnings: string[] = [];
-	const extensions = collectPackages(warnings);
+	// Local-path packages are opt-in: their paths are machine-specific, so
+	// carrying them means copying source, which is a judgement call the caller
+	// makes rather than a default we impose.
+	const kinds = opts.packageKinds ?? REPLAYABLE_KINDS;
+	const extensions = collectPackages(warnings, kinds);
 	const localExtensions = collectLocalExtensions();
 	const providers = collectProviders(opts, warnings);
 	const configFiles = collectConfigFiles(opts, warnings);

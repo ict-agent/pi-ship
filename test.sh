@@ -253,4 +253,105 @@ else
 fi
 
 echo
+say "10. source kinds: every form pi accepts is classified, and selection works both ways"
+
+# Export side: a settings.json containing all eight spec shapes. Two of them
+# (github: and git://) are forms pi itself cannot install, so the correct
+# behaviour is to refuse them loudly rather than carry a broken entry.
+KIND_HOME=/tmp/pi-ship-selftest/kindhome
+rm -rf "$KIND_HOME"; mkdir -p "$KIND_HOME/.pi/agent/npm/node_modules/pi-memory"
+printf '{"name":"pi-memory","version":"1.0.0"}\n' > "$KIND_HOME/.pi/agent/npm/node_modules/pi-memory/package.json"
+cat > "$KIND_HOME/.pi/agent/settings.json" <<'KJSON'
+{
+  "packages": [
+    "npm:pi-memory@^1.0.0",
+    "git:github.com/NVlabs/SoL-Pi@bd005888b9b8",
+    "https://github.com/ict-agent/pi-ship",
+    "ssh://git@example.com/team/tool",
+    "github:someone/broken",
+    "git://example.com/bad/spec",
+    "/tmp/pi-ship-selftest/localpkg"
+  ]
+}
+KJSON
+
+KIND_OUT=/tmp/pi-ship-selftest/kindout
+rm -rf "$KIND_OUT"
+HOME="$KIND_HOME" node --experimental-strip-types -e '
+import { collect } from "./src/collect.ts";
+import { writeBundle } from "./src/writer.ts";
+const m = collect({ outDir: process.argv[1] });
+await writeBundle(m, process.argv[1], { force: true, secrets: {} });
+console.log(JSON.stringify({ kinds: m.layers.extensions.map((e) => e.kind), warn: m.warnings }));
+' "$KIND_OUT" > /tmp/pi-ship-selftest/kind.json 2>/tmp/pi-ship-selftest/kind.err
+
+if [ -s "$KIND_OUT/install.sh" ]; then
+  pass "bundle exports a settings.json containing all source forms"
+else
+  fail "export failed for the all-kinds settings.json"
+  sed -n '1,5p' /tmp/pi-ship-selftest/kind.err
+fi
+
+grep -q '"url"' /tmp/pi-ship-selftest/kind.json \
+  && pass "https:// and ssh:// are carried as kind url" \
+  || fail "URL specs were dropped"
+grep -q 'github:' /tmp/pi-ship-selftest/kind.json \
+  && pass "github: is refused with an explanation (pi cannot resolve it)" \
+  || fail "github: spec was not reported"
+grep -q 'git://' /tmp/pi-ship-selftest/kind.json \
+  && pass "git:// is refused with an explanation (collides with git:)" \
+  || fail "git:// spec was not reported"
+grep -q 'local-path package' /tmp/pi-ship-selftest/kind.json \
+  && pass "local-path package is reported as not shippable" \
+  || fail "local path was not reported"
+
+# The ref-carrying forms must be pinned so the target gets the same build.
+grep -q 'git:https://github.com/ict-agent/pi-ship' "$KIND_OUT/install.sh" \
+  && pass "URL spec is replayed through the git install path" \
+  || fail "URL spec missing from the runbook"
+
+bash -n "$KIND_OUT/install.sh" 2>/dev/null && pass "all-kinds runbook is valid shell" \
+  || fail "all-kinds runbook has a syntax error"
+
+# Install side: the target can decline kinds, and declining must actually skip.
+KIND_TARGET=/tmp/pi-ship-selftest/kindtarget
+rm -rf "$KIND_TARGET"; mkdir -p "$KIND_TARGET"
+
+NPM_ONLY=$( { HOME="$KIND_TARGET" bash "$KIND_OUT/install.sh" --dry-run --yes --kinds=npm 2>&1 | grep -c "skipped - kind"; } || true )
+# This bundle holds 4 packages: 1 npm, 1 git, 2 url. Declining npm skips 3.
+[ "$NPM_ONLY" -eq 3 ] && pass "--kinds=npm declines exactly the 3 git/url packages" \
+  || fail "--kinds=npm declined $NPM_ONLY packages, expected 3"
+
+GITURL_ONLY=$( { HOME="$KIND_TARGET" bash "$KIND_OUT/install.sh" --dry-run --yes --kinds=git,url 2>&1 | grep -c "skipped - kind"; } || true )
+[ "$GITURL_ONLY" -eq 1 ] && pass "--kinds=git,url declines exactly the 1 npm package" \
+  || fail "--kinds=git,url declined $GITURL_ONLY packages, expected 1"
+
+NONE=$( { HOME="$KIND_TARGET" bash "$KIND_OUT/install.sh" --dry-run --yes 2>&1 | grep -c "skipped - kind"; } || true )
+[ "$NONE" -eq 0 ] && pass "omitting --kinds declines nothing" \
+  || fail "default declined $NONE packages, expected 0"
+
+# A declined kind must not be counted as a missing package by the verifier.
+grep -q "kind_wanted 'url' && PKG_WANT" "$KIND_OUT/install.sh" \
+  && pass "verify counts only the packages this run intends to install" \
+  || fail "verify would report declined kinds as missing"
+
+# An empty or unknown value must not silently mean "decline everything" for
+# the empty case, and must be honest for a genuinely unknown kind.
+EMPTY=$( { HOME="$KIND_TARGET" bash "$KIND_OUT/install.sh" --dry-run --yes --kinds= 2>&1 | grep -c "skipped - kind"; } || true )
+[ "$EMPTY" -eq 0 ] && pass "--kinds= (empty) means accept every kind" \
+  || fail "empty --kinds declined $EMPTY packages"
+
+BOGUS=$( { HOME="$KIND_TARGET" bash "$KIND_OUT/install.sh" --dry-run --yes --kinds=bogus 2>&1 | grep -c "skipped - kind"; } || true )
+# `bogus` matches no kind, so all 4 packages are declined. Silently installing
+# them would be worse than declining: the flag means what it says.
+[ "$BOGUS" -eq 4 ] && pass "an unknown kind declines everything rather than installing silently" \
+  || fail "--kinds=bogus declined $BOGUS, expected 4"
+
+# The parser must read the loop variable, not $1. Using ${1#--kinds=} silently
+# set SHIP_KINDS to the script path, which made every kind look declined.
+grep -q 'SHIP_KINDS="${arg#--kinds=}"' "$KIND_OUT/install.sh" \
+  && pass "--kinds parses the loop variable" \
+  || fail "--kinds parses the wrong variable"
+
+echo
 if [ "$FAIL" = 0 ]; then printf '\033[32mALL CHECKS PASSED\033[0m\n'; else printf '\033[31mSOME CHECKS FAILED\033[0m\n'; exit 1; fi

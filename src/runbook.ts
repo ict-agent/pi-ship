@@ -48,6 +48,7 @@ export function generateRunbook(m: ShipManifest): string {
 		"#   ./install.sh --yes           # unattended, accept the defaults/config",
 		"#   ./install.sh --only=extensions,providers",
 		"#   ./install.sh --update-existing  # upgrade packages this machine already has",
+		"#   ./install.sh --kinds=npm,git  # accept only these source kinds (npm,git,url)",
 		"#   ./install.sh --preflight     # only run the self-check, then stop",
 		"#   ./install.sh --help",
 		"# --- end of help ---",
@@ -55,6 +56,7 @@ export function generateRunbook(m: ShipManifest): string {
 		"set -euo pipefail",
 		"",
 		'DRY_RUN=0; ASSUME_YES=0; ONLY=""; PREFLIGHT_ONLY=0; FORCE_INTERACTIVE=0; UPDATE_EXISTING=0',
+		'SHIP_KINDS=""   # empty = accept every kind; else a comma list of npm,git,url',
 		'for arg in "$@"; do',
 		'  case "$arg" in',
 		'    --dry-run) DRY_RUN=1 ;;',
@@ -62,6 +64,7 @@ export function generateRunbook(m: ShipManifest): string {
 		'    --interactive) FORCE_INTERACTIVE=1 ;;',
 		'    --only=*) ONLY="${arg#--only=}" ;;',
 		'    --update-existing) UPDATE_EXISTING=1 ;;',
+		'    --kinds=*) SHIP_KINDS="${arg#--kinds=}" ;;',
 		'    --preflight) PREFLIGHT_ONLY=1 ;;',
 		'    -h|--help)',
 		'      sed -n \'/^# Usage:/,/^# --- end of help ---$/p\' "$0" | sed \'s/^# \\{0,1\\}//\'',
@@ -102,6 +105,15 @@ export function generateRunbook(m: ShipManifest): string {
 		'# settings.json entry and reinstalls, so applying an older bundle onto a',
 		'# newer machine would silently DOWNGRADE packages. So we decide ourselves',
 		'# and install only what is missing.',
+		'',
+		'# kind_wanted <kind> -> 0 if this kind should be installed.',
+		'#   An empty SHIP_KINDS means "accept every kind". A kind is matched only',
+		'#   as a whole comma-separated field, so "git" never matches "gitlab".',
+		'kind_wanted() {',
+		'  [ -z "$SHIP_KINDS" ] && return 0',
+		'  case ",$SHIP_KINDS," in *",$1,"*) return 0 ;; esac',
+		'  return 1',
+		'}',
 		'',
 		'# pkg_name <spec> -> bare package name, version/ref stripped.',
 		'#   npm:pi-memory@0.4.2     -> pi-memory',
@@ -536,13 +548,18 @@ export function generateRunbook(m: ShipManifest): string {
 			"# already-installed semantics: it rewrites the settings.json entry and",
 			"# reinstalls, so applying an older bundle to a newer machine could",
 			"# silently downgrade it. Pass --update-existing to upgrade instead.",
+			"#",
+			"# SOURCE KINDS: pass --kinds=npm,git,url to accept only some of them.",
+			"# A declined kind is reported and skipped; nothing is installed for it.",
 			'if want extensions; then',
-			'  PI_FAILED=(); PI_SKIPPED=()',
+			'  PI_FAILED=(); PI_SKIPPED=(); PI_DECLINED=()',
 		);
 		for (const e of m.layers.extensions) {
 			L.push(
-				`  # ${e.source}${e.version ? `  (pinned ${e.version})` : ""}`,
-				`  if pkg_installed ${sh(e.name)}; then`,
+				`  # ${e.source}${e.version ? `  (pinned ${e.version})` : ""}  [kind: ${e.kind}]`,
+				`  if ! kind_wanted ${sh(e.kind)}; then`,
+				`    info "${e.name} skipped - kind '${e.kind}' declined (--kinds)"; PI_DECLINED+=(${sh(e.name)})`,
+				`  elif pkg_installed ${sh(e.name)}; then`,
 				'    if [ "$UPDATE_EXISTING" = 1 ]; then',
 				`      if doit pi install ${sh(e.spec)}; then :; else PI_FAILED+=(${sh(e.name)}); fi`,
 				"    else",
@@ -552,6 +569,9 @@ export function generateRunbook(m: ShipManifest): string {
 			);
 		}
 		L.push(
+			'  if [[ ${#PI_DECLINED[@]} -gt 0 ]]; then',
+			'    info "${#PI_DECLINED[@]} skipped by --kinds (run without it to include them)"',
+			"  fi",
 			'  if [[ ${#PI_SKIPPED[@]} -gt 0 ]]; then',
 			'    info "${#PI_SKIPPED[@]} already present, left untouched (--update-existing upgrades)"',
 			"  fi",
@@ -749,8 +769,11 @@ export function generateRunbook(m: ShipManifest): string {
 
 	if (m.layers.extensions.length > 0) {
 		L.push(
-			`PKG_WANT=${m.layers.extensions.length}`,
-			'PKG_GOT=0',
+			"PKG_WANT=0",
+			// Only count packages this run actually intends to install: a kind
+			// declined via --kinds must not be reported as a missing package.
+			...m.layers.extensions.map((e) => `kind_wanted ${sh(e.kind)} && PKG_WANT=$((PKG_WANT+1))`),
+			"PKG_GOT=0",
 			'if [ -f "$AGENT_DIR/settings.json" ]; then',
 			'  PKG_GOT="$(node -e \'try{const s=require(process.argv[1]);console.log((s.packages||[]).length)}catch{console.log(0)}\' "$AGENT_DIR/settings.json" 2>/dev/null || echo 0)"',
 			"fi",

@@ -15,19 +15,34 @@
  * everything else must be opted in explicitly.
  */
 
+/**
+ * Package source kinds pi-ship can replay on another machine.
+ *
+ * pi's own split is in utils/paths.js isLocalPath(). `npm` and `git` are
+ * distinct install paths in pi; the URL forms (`https://`, `ssh://`, `git://`)
+ * all normalise onto the git resolver — verified against pi's parseGitUrl —
+ * so they share kind "url" and differ only in how the spec was written.
+ *
+ * Local paths are deliberately NOT a kind: pi treats them as bare pointers and
+ * never copies them, so the path cannot be replayed. See collectPackages().
+ * `github:` is also absent — pi calls it non-local but parseGitUrl() cannot
+ * resolve it, so pi itself cannot install it.
+ */
+export type PackageKind = "npm" | "git" | "url";
+
 /** What a single installable extension entry is. */
 export type PackageSpec = {
 	/** The spec exactly as pi understands it, e.g. `npm:pi-memory@0.4.2`. */
 	spec: string;
-	/** `npm` or `git`. */
-	kind: "npm" | "git";
+	/** Which install path pi will take for this entry. */
+	kind: PackageKind;
 	/** Package name for npm, or repo path for git. */
 	name: string;
 	/** Resolved installed version, if we could determine one. */
 	version?: string;
-	/** Pinned git commit/tag when kind === "git". */
+	/** Pinned git commit/tag when the entry resolves to git. */
 	ref?: string;
-	/** Whether pi validated this package during collection. */
+	/** The spec as written on the source machine. */
 	source: string;
 };
 
@@ -106,9 +121,18 @@ export type ExportOptions = {
 	configFiles?: boolean;
 	/** Config basenames to include; empty/undefined means the default safe set. */
 	configFileNames?: string[];
+	/**
+	 * Which package source kinds to carry. Undefined means all replayable kinds
+	 * (npm, git, url). Local-path packages are never carried: their paths are
+	 * machine-specific and pi stores them as bare pointers.
+	 */
+	packageKinds?: PackageKind[];
 	/** Output directory. */
 	outDir: string;
 };
+
+/** Source kinds that can always be replayed on another machine. */
+export const REPLAYABLE_KINDS: PackageKind[] = ["npm", "git", "url"];
 
 /** Files that are safe-by-default when the user opts into config shipping. */
 export const DEFAULT_CONFIG_FILES = [

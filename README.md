@@ -61,6 +61,59 @@ Exports are layered so the default is safe:
 | L4 | portable settings keys (theme, default model, …) | ✅ always |
 | L5 | secret **values** | `--with-keys` |
 
+## Package source kinds
+
+`settings.json` can list packages in several forms. pi-ship recognises every
+form pi itself accepts, and lets you choose on **both** sides — what the source
+machine carries, and what the target machine accepts.
+
+| Written as | Kind | Shipped? |
+|---|---|---|
+| `npm:pkg@1.0.0` | `npm` | yes, pinned to the installed version |
+| `git:host/path@ref` | `git` | yes, pinned to the commit |
+| `https://host/path` | `url` | yes, pinned to the commit |
+| `ssh://git@host/path` | `url` | yes, pinned to the commit |
+| `/abs/path`, `./rel`, bare name | — | **never** — see below |
+| `github:owner/repo` | — | **never** — pi cannot resolve it |
+| `git://host/path` | — | **never** — collides with the `git:` prefix |
+
+The URL forms need no special handling on the target: pi routes `git:`,
+`https://`, `ssh://` and `git://` through the same internal parser, so pi-ship
+replays every one of them through the single `git:` install path. The `url`
+kind exists only so you can tell them apart when choosing.
+
+**Local paths are never shipped.** pi stores them as bare pointers and checks
+only that the path exists — it never copies the package — so there is no
+faithful way to replay one on another machine. Copying the contents would mean
+guessing a target path and silently changing what you configured. They are
+reported in the export warnings instead.
+
+**Two forms are refused outright**, because pi cannot install them on the
+source machine either: `github:owner/repo` (pi treats it as non-local but its
+parser cannot resolve it) and `git://host/path` (the `git:` prefix wins, leaving
+the unusable repo `//host/path`). Both warnings name the fix: use
+`git:host/path` or a full URL.
+
+### Choosing what to carry (export)
+
+```
+/ship export --kinds=npm          # npm packages only
+/ship export --kinds=npm,git      # skip URL-sourced packages
+/ship export                      # default: npm, git and url
+```
+
+### Choosing what to accept (target)
+
+```
+./install.sh --kinds=npm,git      # decline url-sourced packages
+./install.sh                      # default: accept every kind present
+```
+
+A declined package is reported and skipped; nothing is installed for it, and
+the verifier does not count it as missing. An absent or empty `--kinds` accepts
+everything. Naming only unknown kinds declines everything rather than silently
+installing — the flag means what it says.
+
 ## Incremental by default
 
 `pi-ship` is built for merging into a machine that **already has pi**. Nothing
@@ -125,7 +178,7 @@ because overwriting a working credential is a worse failure than leaving it.
 
 ```
 /ship help
-/ship export [--providers] [--config] [--with-keys] [--out=DIR] [--force]
+/ship export [--providers] [--config] [--with-keys] [--kinds=a,b] [--out=DIR] [--force]
 /ship preflight [<bundle>]
 /ship plan <bundle>        # what applying it here would change (writes nothing)
 /ship verify <bundle>      # check this machine matches the bundle
