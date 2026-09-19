@@ -1,0 +1,18 @@
+# dependencies
+node_modules/
+
+# local build/test scratch
+.tmp/
+*.log
+
+# exported bundles — these contain machine state and possibly secrets
+pi-migrate-*/
+pi-ship-*/
+*.tgz
+
+# pi session/task state (local only)
+.pi/
+
+# editor / OS noise
+.DS_Store
+._*

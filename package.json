@@ -1,0 +1,58 @@
+{
+  "name": "pi-migrate",
+  "version": "0.1.0",
+  "description": "Migrate a pi setup between machines: snapshot pinned extensions, providers and user config into a portable bundle, then replay it with a self-checking interactive runbook.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/ict-agent/pi-migrate#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ict-agent/pi-migrate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ict-agent/pi-migrate/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "migration",
+    "dotfiles",
+    "bootstrap",
+    "provisioning",
+    "backup",
+    "restore",
+    "coding-agent"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "MIGRATION.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "./test.sh"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
